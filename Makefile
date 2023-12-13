@@ -36,7 +36,7 @@ static: fmt lint vet
 fmt: ## Run go fmt against code
 	go fmt ./...
 lint: golangci-lint ## Run golangci-lint
-	$(GOLANGCI_LINT) run --verbose
+	$(GOLANGCI_LINT) run
 vet: ## Run go vet against code
 	go vet ./...
 
