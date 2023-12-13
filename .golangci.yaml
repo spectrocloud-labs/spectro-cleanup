@@ -20,17 +20,9 @@ linters-settings:
 
   # Non-default
   cyclop:
-    # Top 3:
-    # (*SpectroClusterReconciler).reconcileOnPilot: 80
-    # (*SpectroClusterReconciler).reconcilePacks: 65
-    # clusterdeployer (*manager).Reconcile: 52
     max-complexity: 10 # maximal code complexity to report; default 10
     package-average: 16.0 # maximal average package complexity to report; default 0.0
   gocognit:
-    # Top 3:
-    # (*SpectroClusterReconciler).reconcileOnPilot: 158
-    # (*SpectroClusterReconciler).reconcilePacks: 136
-    # clusterdeployer (*manager).Reconcile: 107
     min-complexity: 30 # minimal code complexity to report; default: 30
 
 linters:
