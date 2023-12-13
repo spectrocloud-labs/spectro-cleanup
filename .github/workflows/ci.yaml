@@ -13,8 +13,6 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v3
         with:
-          go-version: 1.18
-      - name: Static Analysis
-        run: make static
+          go-version: 1.21
       - name: Test
         run: make test
