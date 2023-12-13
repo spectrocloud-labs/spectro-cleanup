@@ -10,7 +10,7 @@ CLEANUP_IMG ?= "gcr.io/spectro-common-dev/${USER}/spectro-cleanup:latest"
 BIN_DIR ?= ./bin
 FIPS_ENABLE ?= ""
 BUILDER_GOLANG_VERSION ?= 1.21
-GOLANGCI_VERSION ?= 1.50.1
+GOLANGCI_VERSION ?= 1.55.2
 
 GOOS ?= $(shell go env GOOS)
 GOARCH ?= $(shell go env GOARCH)
@@ -36,7 +36,7 @@ static: fmt lint vet
 fmt: ## Run go fmt against code
 	go fmt ./...
 lint: golangci-lint ## Run golangci-lint
-	$(GOLANGCI_LINT) run
+	$(GOLANGCI_LINT) run --verbose
 vet: ## Run go vet against code
 	go vet ./...
 
