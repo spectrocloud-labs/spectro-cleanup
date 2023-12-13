@@ -10,7 +10,7 @@ CLEANUP_IMG ?= "gcr.io/spectro-common-dev/${USER}/spectro-cleanup:latest"
 BIN_DIR ?= ./bin
 FIPS_ENABLE ?= ""
 BUILDER_GOLANG_VERSION ?= 1.21
-GOLANGCI_VERSION ?= 1.50.1
+GOLANGCI_VERSION ?= 1.55.2
 
 GOOS ?= $(shell go env GOOS)
 GOARCH ?= $(shell go env GOARCH)
@@ -29,7 +29,7 @@ test: static ## Run tests
 
 ##@ Dev Targets
 build-cleanup: static  ## Builds cleanup binary. Output to './bin' directory.
-	go build -o bin/spectro-cleanup spectro-cleanup/main.go
+	go build -o bin/spectro-cleanup main.go
 
 ##@ Static Analysis Targets
 static: fmt lint vet
@@ -43,7 +43,7 @@ vet: ## Run go vet against code
 ##@ Image Targets
 docker: docker-build-cleanup docker-push ## Tags docker image and also pushes it to container registry
 docker-build-cleanup: ## Builds docker image for Spectro Cleanup
-	docker build . -t ${CLEANUP_IMG} ${BUILD_ARGS} -f ./spectro-cleanup/Dockerfile
+	docker build . -t ${CLEANUP_IMG} ${BUILD_ARGS} -f ./Dockerfile
 docker-push: ## Pushes docker images to container registry
 	docker push ${CLEANUP_IMG}
 docker-rmi: ## Remove the local docker images
@@ -66,3 +66,19 @@ golangci-lint:
 		rm -rf ./golangci-lint-$(GOLANGCI_VERSION)-$(GOOS)-$(GOARCH)*; \
 	fi
 GOLANGCI_LINT=$(BIN_DIR)/golangci-lint-$(GOOS)-$(GOARCH)
+
+##@ Proto Targets
+proto-lint: ## Lint the proto files
+	buf lint proto
+
+proto-breaking: ## Check for breaking changes
+	buf breaking proto --against ".git#subdir=proto"
+
+proto-build: ## Build proto files
+	buf build proto
+
+proto-gen: proto-breaking proto-lint proto-build ## Generate code from proto files
+	buf generate proto
+
+proto-push: proto-breaking proto-lint proto-build ## Push module to the buf schema registry
+	buf push proto

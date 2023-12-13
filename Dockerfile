@@ -17,9 +17,9 @@ COPY . .
 # Build
 RUN if [ ${CRYPTO_LIB} ]; \
     then \
-      go-build-fips.sh -a -o cleanup spectro-cleanup/main.go ;\
+      go-build-fips.sh -a -o cleanup main.go ;\
     else \
-      go-build-static.sh -a -o cleanup spectro-cleanup/main.go ;\
+      go-build-static.sh -a -o cleanup main.go ;\
     fi
 RUN if [ "${CRYPTO_LIB}" ]; then assert-static.sh atop; fi
 RUN if [ "${CRYPTO_LIB}" ]; then assert-fips.sh atop; fi
