@@ -1,0 +1,8 @@
+version: v1
+name: buf.build/spectrocloud/spectro-cleanup
+breaking:
+  use:
+    - FILE
+lint:
+  use:
+    - DEFAULT

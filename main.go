@@ -20,6 +20,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -31,7 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/klog/v2/klogr"
+	"k8s.io/klog/v2/textlogger"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -63,8 +64,7 @@ type DeleteObj struct {
 }
 
 func main() {
-
-	ctrl.SetLogger(klogr.New())
+	ctrl.SetLogger(textlogger.NewLogger(textlogger.NewConfig()))
 	ctx := context.TODO()
 
 	config := ctrl.GetConfigOrDie()
@@ -117,7 +117,8 @@ func initConfig() {
 
 // readConfig loads a configuration file from the local filesystem
 func readConfig(path, configType string) []byte {
-	log.Info("Reading Spectro Cleanup config", "path", fileConfigPath, "configType", configType)
+	path = filepath.Clean(path)
+	log.Info("Reading Spectro Cleanup config", "path", path, "configType", configType)
 	bytes, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		log.Info("WARNING: config file not found. Skipping.", "configType", configType)
