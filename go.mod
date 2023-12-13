@@ -1,6 +1,6 @@
 module github.com/spectrocloud-labs/spectro-cleanup
 
-go 1.21.3
+go 1.21
 
 require (
 	connectrpc.com/connect v1.13.0
