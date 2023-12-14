@@ -18,12 +18,20 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"time"
 
+	"buf.build/gen/go/spectrocloud/spectro-cleanup/connectrpc/go/cleanup/v1/cleanupv1connect"
+	cleanv1 "buf.build/gen/go/spectrocloud/spectro-cleanup/protocolbuffers/go/cleanup/v1"
+
+	connect "connectrpc.com/connect"
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -40,9 +48,11 @@ import (
 var (
 	scheme = runtime.NewScheme()
 	log    = ctrl.Log.WithName("spectro-cleanup")
+	notif  = new(chan bool)
 
 	// optional env vars to override default configuration
 	cleanupSeconds     int64
+	enableRPCServer    bool
 	propagationPolicy  = metav1.DeletePropagationBackground
 	cleanupSecondsStr  = os.Getenv("CLEANUP_DELAY_SECONDS")
 	fileConfigPath     = os.Getenv("CLEANUP_FILE_CONFIG_PATH")
@@ -50,6 +60,8 @@ var (
 	saName             = os.Getenv("CLEANUP_SA_NAME")
 	roleName           = os.Getenv("CLEANUP_ROLE_NAME")
 	roleBindingName    = os.Getenv("CLEANUP_ROLEBINDING_NAME")
+	enableRPCServerStr = os.Getenv("CLEANUP_RPC_SERVER_ENABLED")
+	port               = os.Getenv("CLEANUP_RPC_SERVER_PORT")
 )
 
 func init() {
@@ -66,6 +78,10 @@ type DeleteObj struct {
 func main() {
 	ctrl.SetLogger(textlogger.NewLogger(textlogger.NewConfig()))
 	ctx := context.TODO()
+
+	if enableRPCServer {
+		startGRPCServer()
+	}
 
 	config := ctrl.GetConfigOrDie()
 	client, err := ctrlclient.New(config, ctrlclient.Options{
@@ -113,6 +129,16 @@ func initConfig() {
 			panic(err)
 		}
 	}
+
+	if enableRPCServerStr == "true" {
+		enableRPCServer = true
+
+		_, err := strconv.Atoi(port)
+		if err != nil {
+			log.Info("WARNING: CLEANUP_RPC_SERVER_PORT not set to a valid integer, setting to default value 3005")
+			port = "3005"
+		}
+	}
 }
 
 // readConfig loads a configuration file from the local filesystem
@@ -158,13 +184,21 @@ func cleanupResources(ctx context.Context, client ctrlclient.Client, dynamic dyn
 		panic(err)
 	}
 
+	*notif = make(chan bool)
+
 	numObjs := len(resourcesToDelete)
 	for i, obj := range resourcesToDelete {
 		// the final object in the resource config must be the spectro-cleanup Pod/DaemonSet/Job
 		if i == numObjs-1 {
 			setOwnerReferences(ctx, client, dynamic, obj)
-			log.Info("Self destructing...", "delaySeconds", cleanupSeconds)
-			time.Sleep(time.Duration(cleanupSeconds) * time.Second)
+
+			log.Info("Self destructing...", "maxDelaySeconds", cleanupSeconds)
+			select {
+			case <-*notif:
+				log.Info("FinalizeCleanup notification received, self destructing")
+			case <-time.After(time.Duration(cleanupSeconds) * time.Second):
+				log.Info(fmt.Sprintf("%d seconds elapsed, self destructing", cleanupSeconds))
+			}
 		}
 
 		gvrStr := obj.GroupVersionResource.String()
@@ -177,6 +211,9 @@ func cleanupResources(ctx context.Context, client ctrlclient.Client, dynamic dyn
 		}
 		log.Info("Resource deletion successful")
 	}
+
+	close(*notif)
+	*notif = nil
 }
 
 // setOwnerReferences ensures garbage collection of RBAC resources used by cleanup Pod/DaemonSet/Job post self-destruction
@@ -227,4 +264,45 @@ func setOwnerReferences(ctx context.Context, client ctrlclient.Client, dynamic d
 		panic(err)
 	}
 	log.Info("Set cleanup ownerReference", "roleBinding", roleBindingName)
+}
+
+func startGRPCServer() {
+	mux := http.NewServeMux()
+	path, handler := cleanupv1connect.NewCleanupServiceHandler(&cleanupServiceServer{})
+	mux.Handle(path, handler)
+	address := "0.0.0.0" + ":" + port
+	server := &http.Server{
+		Addr:         address,
+		Handler:      h2c.NewHandler(mux, &http2.Server{}),
+		ReadTimeout:  1 * time.Second,
+		WriteTimeout: 1 * time.Second,
+	}
+	go func() {
+		log.Info("Starting GRPC server...", "address", address)
+		err := server.ListenAndServe()
+		if err != nil {
+			log.Error(err, "GRPC server failed to start, will not be able to receive FinalizeCleanup requests")
+		}
+	}()
+}
+
+// cleanupServiceServer implements the CleanupService API.
+type cleanupServiceServer struct {
+	cleanupv1connect.UnimplementedCleanupServiceHandler
+}
+
+// FinalizeCleanup notifies spectro-cleanup that it can now self destruct.
+func (s *cleanupServiceServer) FinalizeCleanup(
+	ctx context.Context,
+	req *connect.Request[cleanv1.FinalizeCleanupRequest],
+) (*connect.Response[cleanv1.FinalizeCleanupResponse], error) {
+	log.Info("Received request to FinalizeCleanup")
+	if *notif == nil {
+		err := errors.New("illegally notified cleanup prior to cleanup resources call")
+		log.Error(err, "nil notification channel")
+		return connect.NewResponse(&cleanv1.FinalizeCleanupResponse{}), err
+	}
+
+	*notif <- true
+	return connect.NewResponse(&cleanv1.FinalizeCleanupResponse{}), nil
 }
