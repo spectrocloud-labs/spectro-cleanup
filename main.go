@@ -51,17 +51,17 @@ var (
 	notif  = new(chan bool)
 
 	// optional env vars to override default configuration
-	cleanupSeconds     int64
-	enableRPCServer    bool
-	propagationPolicy  = metav1.DeletePropagationBackground
-	cleanupSecondsStr  = os.Getenv("CLEANUP_DELAY_SECONDS")
-	fileConfigPath     = os.Getenv("CLEANUP_FILE_CONFIG_PATH")
-	resourceConfigPath = os.Getenv("CLEANUP_RESOURCE_CONFIG_PATH")
-	saName             = os.Getenv("CLEANUP_SA_NAME")
-	roleName           = os.Getenv("CLEANUP_ROLE_NAME")
-	roleBindingName    = os.Getenv("CLEANUP_ROLEBINDING_NAME")
-	enableRPCServerStr = os.Getenv("CLEANUP_RPC_SERVER_ENABLED")
-	port               = os.Getenv("CLEANUP_RPC_SERVER_PORT")
+	cleanupSeconds      int64
+	enableGrpcServer    bool
+	propagationPolicy   = metav1.DeletePropagationBackground
+	cleanupSecondsStr   = os.Getenv("CLEANUP_DELAY_SECONDS")
+	fileConfigPath      = os.Getenv("CLEANUP_FILE_CONFIG_PATH")
+	resourceConfigPath  = os.Getenv("CLEANUP_RESOURCE_CONFIG_PATH")
+	saName              = os.Getenv("CLEANUP_SA_NAME")
+	roleName            = os.Getenv("CLEANUP_ROLE_NAME")
+	roleBindingName     = os.Getenv("CLEANUP_ROLEBINDING_NAME")
+	enableGrpcServerStr = os.Getenv("CLEANUP_GRPC_SERVER_ENABLED")
+	grpcPortStr         = os.Getenv("CLEANUP_GRPC_SERVER_PORT")
 )
 
 func init() {
@@ -79,7 +79,7 @@ func main() {
 	ctrl.SetLogger(textlogger.NewLogger(textlogger.NewConfig()))
 	ctx := context.TODO()
 
-	if enableRPCServer {
+	if enableGrpcServer {
 		startGRPCServer()
 	}
 
@@ -130,13 +130,12 @@ func initConfig() {
 		}
 	}
 
-	if enableRPCServerStr == "true" {
-		enableRPCServer = true
+	if enableGrpcServerStr == "true" {
+		enableGrpcServer = true
 
-		_, err := strconv.Atoi(port)
+		_, err := strconv.Atoi(grpcPortStr)
 		if err != nil {
-			log.Info("WARNING: CLEANUP_RPC_SERVER_PORT not set to a valid integer, setting to default value 3005")
-			port = "3005"
+			panic(err)
 		}
 	}
 }
@@ -270,7 +269,7 @@ func startGRPCServer() {
 	mux := http.NewServeMux()
 	path, handler := cleanupv1connect.NewCleanupServiceHandler(&cleanupServiceServer{})
 	mux.Handle(path, handler)
-	address := "0.0.0.0" + ":" + port
+	address := fmt.Sprintf("0.0.0.0:%s", grpcPortStr)
 	server := &http.Server{
 		Addr:         address,
 		Handler:      h2c.NewHandler(mux, &http2.Server{}),
@@ -278,10 +277,10 @@ func startGRPCServer() {
 		WriteTimeout: 1 * time.Second,
 	}
 	go func() {
-		log.Info("Starting GRPC server...", "address", address)
+		log.Info("Starting gRPC server...", "address", address)
 		err := server.ListenAndServe()
 		if err != nil {
-			log.Error(err, "GRPC server failed to start, will not be able to receive FinalizeCleanup requests")
+			log.Error(err, "gRPC server failed to start, will not be able to receive FinalizeCleanup requests")
 		}
 	}()
 }
