@@ -22,8 +22,11 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
+	"sync"
+	"syscall"
 	"time"
 
 	"buf.build/gen/go/spectrocloud/spectro-cleanup/connectrpc/go/cleanup/v1/cleanupv1connect"
@@ -79,8 +82,10 @@ func main() {
 	ctrl.SetLogger(textlogger.NewLogger(textlogger.NewConfig()))
 	ctx := context.TODO()
 
+	var wg sync.WaitGroup
 	if enableGrpcServer {
-		startGRPCServer()
+		wg.Add(1)
+		go startGRPCServer(&wg)
 	}
 
 	config := ctrl.GetConfigOrDie()
@@ -95,6 +100,7 @@ func main() {
 	cleanupFiles()
 	cleanupResources(ctx, client, dynamic)
 
+	wg.Wait()
 	os.Exit(0)
 }
 
@@ -265,7 +271,9 @@ func setOwnerReferences(ctx context.Context, client ctrlclient.Client, dynamic d
 	log.Info("Set cleanup ownerReference", "roleBinding", roleBindingName)
 }
 
-func startGRPCServer() {
+func startGRPCServer(wg *sync.WaitGroup) {
+	defer wg.Done()
+
 	mux := http.NewServeMux()
 	path, handler := cleanupv1connect.NewCleanupServiceHandler(&cleanupServiceServer{})
 	mux.Handle(path, handler)
@@ -277,12 +285,25 @@ func startGRPCServer() {
 		WriteTimeout: 1 * time.Second,
 	}
 	go func() {
-		log.Info("Starting gRPC server...", "address", address)
+		log.Info("gRPC server starting...", "address", address)
 		err := server.ListenAndServe()
 		if err != nil {
-			log.Error(err, "gRPC server failed to start, will not be able to receive FinalizeCleanup requests")
+			log.Error(err, "gRPC server stopped, unable to handle further FinalizeCleanup requests")
 		}
 	}()
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	<-stop
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		log.Error(err, "Error while shutting down gRPC server")
+		return
+	}
+
+	log.Info("gRPC server gracefully shut down")
 }
 
 // cleanupServiceServer implements the CleanupService API.
