@@ -48,6 +48,11 @@ import (
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+const (
+	FilesToDelete     = "filesToDelete"
+	ResourcesToDelete = "resourcesToDelete"
+)
+
 var (
 	scheme = runtime.NewScheme()
 	log    = ctrl.Log.WithName("spectro-cleanup")
@@ -163,7 +168,7 @@ func readConfig(path, configType string) []byte {
 // cleanupFiles deletes all files specified in the file cleanup config file
 func cleanupFiles() {
 	filesToDelete := []string{}
-	bytes := readConfig(fileConfigPath, "filesToDelete")
+	bytes := readConfig(fileConfigPath, FilesToDelete)
 	if bytes == nil {
 		return
 	}
@@ -184,7 +189,7 @@ func cleanupFiles() {
 // cleanupResources deletes all K8s resources specified in the resource cleanup config file
 func cleanupResources(ctx context.Context, client ctrlclient.Client, dynamic dynamic.Interface) {
 	resourcesToDelete := []DeleteObj{}
-	bytes := readConfig(resourceConfigPath, "resourcesToDelete")
+	bytes := readConfig(resourceConfigPath, ResourcesToDelete)
 	if err := json.Unmarshal(bytes, &resourcesToDelete); err != nil {
 		panic(err)
 	}
