@@ -70,6 +70,8 @@ var (
 	roleBindingName     = os.Getenv("CLEANUP_ROLEBINDING_NAME")
 	enableGrpcServerStr = os.Getenv("CLEANUP_GRPC_SERVER_ENABLED")
 	grpcPortStr         = os.Getenv("CLEANUP_GRPC_SERVER_PORT")
+
+	ErrIllegalCleanupNotification = errors.New("illegally notified cleanup prior to cleanup resources call")
 )
 
 func init() {
@@ -323,7 +325,7 @@ func (s *cleanupServiceServer) FinalizeCleanup(
 ) (*connect.Response[cleanv1.FinalizeCleanupResponse], error) {
 	log.Info("Received request to FinalizeCleanup")
 	if *notif == nil {
-		err := errors.New("illegally notified cleanup prior to cleanup resources call")
+		err := ErrIllegalCleanupNotification
 		log.Error(err, "nil notification channel")
 		return connect.NewResponse(&cleanv1.FinalizeCleanupResponse{}), err
 	}
