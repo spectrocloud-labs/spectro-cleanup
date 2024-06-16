@@ -9,7 +9,7 @@ CLEANUP_IMG ?= "gcr.io/spectro-common-dev/${USER}/spectro-cleanup:latest"
 # binary versions
 BIN_DIR ?= ./bin
 FIPS_ENABLE ?= ""
-BUILDER_GOLANG_VERSION ?= 1.21
+BUILDER_GOLANG_VERSION ?= 1.22
 GOLANGCI_VERSION ?= 1.55.2
 
 GOOS ?= $(shell go env GOOS)
