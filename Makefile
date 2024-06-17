@@ -25,7 +25,7 @@ help:  ## Display this help
 .PHONY: test
 test: static ## Run tests
 	@mkdir -p _build/cov
-	go test -covermode=atomic -coverpkg=./... -coverprofile _build/cov/coverage.out ./... -timeout 120m
+	go test ./... -coverprofile cover.out
 
 ##@ Dev Targets
 build-cleanup: static  ## Builds cleanup binary. Output to './bin' directory.
