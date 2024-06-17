@@ -48,6 +48,11 @@ import (
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+const (
+	FilesToDelete     = "filesToDelete"
+	ResourcesToDelete = "resourcesToDelete"
+)
+
 var (
 	scheme = runtime.NewScheme()
 	log    = ctrl.Log.WithName("spectro-cleanup")
@@ -65,6 +70,8 @@ var (
 	roleBindingName     = os.Getenv("CLEANUP_ROLEBINDING_NAME")
 	enableGrpcServerStr = os.Getenv("CLEANUP_GRPC_SERVER_ENABLED")
 	grpcPortStr         = os.Getenv("CLEANUP_GRPC_SERVER_PORT")
+
+	ErrIllegalCleanupNotification = errors.New("illegally notified cleanup prior to cleanup resources call")
 )
 
 func init() {
@@ -80,7 +87,7 @@ type DeleteObj struct {
 
 func main() {
 	ctrl.SetLogger(textlogger.NewLogger(textlogger.NewConfig()))
-	ctx := context.TODO()
+	ctx := context.Background()
 
 	var wg sync.WaitGroup
 	if enableGrpcServer {
@@ -163,7 +170,7 @@ func readConfig(path, configType string) []byte {
 // cleanupFiles deletes all files specified in the file cleanup config file
 func cleanupFiles() {
 	filesToDelete := []string{}
-	bytes := readConfig(fileConfigPath, "filesToDelete")
+	bytes := readConfig(fileConfigPath, FilesToDelete)
 	if bytes == nil {
 		return
 	}
@@ -184,7 +191,7 @@ func cleanupFiles() {
 // cleanupResources deletes all K8s resources specified in the resource cleanup config file
 func cleanupResources(ctx context.Context, client ctrlclient.Client, dynamic dynamic.Interface) {
 	resourcesToDelete := []DeleteObj{}
-	bytes := readConfig(resourceConfigPath, "resourcesToDelete")
+	bytes := readConfig(resourceConfigPath, ResourcesToDelete)
 	if err := json.Unmarshal(bytes, &resourcesToDelete); err != nil {
 		panic(err)
 	}
@@ -318,7 +325,7 @@ func (s *cleanupServiceServer) FinalizeCleanup(
 ) (*connect.Response[cleanv1.FinalizeCleanupResponse], error) {
 	log.Info("Received request to FinalizeCleanup")
 	if *notif == nil {
-		err := errors.New("illegally notified cleanup prior to cleanup resources call")
+		err := ErrIllegalCleanupNotification
 		log.Error(err, "nil notification channel")
 		return connect.NewResponse(&cleanv1.FinalizeCleanupResponse{}), err
 	}

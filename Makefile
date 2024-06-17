@@ -9,7 +9,7 @@ CLEANUP_IMG ?= "gcr.io/spectro-common-dev/${USER}/spectro-cleanup:latest"
 # binary versions
 BIN_DIR ?= ./bin
 FIPS_ENABLE ?= ""
-BUILDER_GOLANG_VERSION ?= 1.21
+BUILDER_GOLANG_VERSION ?= 1.22
 GOLANGCI_VERSION ?= 1.55.2
 
 GOOS ?= $(shell go env GOOS)
@@ -25,7 +25,7 @@ help:  ## Display this help
 .PHONY: test
 test: static ## Run tests
 	@mkdir -p _build/cov
-	go test -covermode=atomic -coverpkg=./... -coverprofile _build/cov/coverage.out ./... -timeout 120m
+	go test ./... -coverprofile cover.out
 
 ##@ Dev Targets
 build-cleanup: static  ## Builds cleanup binary. Output to './bin' directory.
