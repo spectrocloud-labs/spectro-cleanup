@@ -87,7 +87,7 @@ type DeleteObj struct {
 
 func main() {
 	ctrl.SetLogger(textlogger.NewLogger(textlogger.NewConfig()))
-	ctx := context.TODO()
+	ctx := context.Background()
 
 	var wg sync.WaitGroup
 	if enableGrpcServer {
