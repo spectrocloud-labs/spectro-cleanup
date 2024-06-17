@@ -363,5 +363,5 @@ spec:
               path: resource-config.json
 
 ```
-The main things to note here are that all three of the `CLEANUP_GRPC_SERVER_ENBALED`, `CLEANUP_GRPC_SERVER_PORT`, and `CLEANUP_DELAY_SECONDS` env cars are set.
+The main things to note here are that all three of the `CLEANUP_GRPC_SERVER_ENBALED`, `CLEANUP_GRPC_SERVER_PORT`, and `CLEANUP_DELAY_SECONDS` env vars are set.
 You can see more about how this configuration is setup in the [validator repo](https://github.com/validator-labs/validator/blob/86457a3b47efbf05bb6380589b45c35e62fe70fa/chart/validator/templates/cleanup.yaml#L103).
