@@ -314,7 +314,7 @@ If there are any resources added to the `resource-config.json` _after_ the two a
 
 You can also optionally configure a gRPC server to run as a part of spectro-cleanup. This server has a single endpoint, `FinalizeCleanup`.
 When this server is configured, spectro-cleanup will be able to wait for a request that notifies it that it can finally clean itself up.
-In this case, the `CLEANUP_DELAY_SECONDS` env var will have the fallback time to self destruct in the case that a request is never made to the `FinalizeCleanup` endpoint.
+In this case, the `CLEANUP_TIMEOUT_SECONDS` env var will have the fallback time to self destruct in the case that a request is never made to the `FinalizeCleanup` endpoint.
 Below you can see an example of how to configure the gRPC server on your daemonset or job:
 ```yaml
 apiVersion: batch/v1
@@ -336,7 +336,7 @@ spec:
         image: {{ required ".Values.cleanup.image is required!" .Values.cleanup.image }}
         command: ["/cleanup"]
         env:
-        - name: CLEANUP_DELAY_SECONDS
+        - name: CLEANUP_TIMEOUT_SECONDS
           value: "300"
         {{- if .Values.cleanup.grpcServerEnabled }}
         - name: CLEANUP_GRPC_SERVER_ENABLED
@@ -363,5 +363,5 @@ spec:
               path: resource-config.json
 
 ```
-The main things to note here are that all three of the `CLEANUP_GRPC_SERVER_ENABLED`, `CLEANUP_GRPC_SERVER_PORT`, and `CLEANUP_DELAY_SECONDS` env vars are set.
+The main things to note here are that all three of the `CLEANUP_GRPC_SERVER_ENABLED`, `CLEANUP_GRPC_SERVER_PORT`, and `CLEANUP_TIMEOUT_SECONDS` env vars are set.
 You can see more about how this configuration is setup in the [validator repo](https://github.com/validator-labs/validator/blob/86457a3b47efbf05bb6380589b45c35e62fe70fa/chart/validator/templates/cleanup.yaml#L103).

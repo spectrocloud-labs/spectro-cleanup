@@ -37,10 +37,12 @@ import (
 	"golang.org/x/net/http2/h2c"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/dynamic"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/klog/v2/textlogger"
@@ -59,10 +61,13 @@ var (
 	notif  = new(chan bool)
 
 	// optional env vars to override default configuration
-	cleanupSeconds      int64
+	cleanupTimeout      time.Duration
+	deletionInterval    time.Duration
+	deletionTimeout     time.Duration
 	enableGrpcServer    bool
+	blockingDeletion    bool
 	propagationPolicy   = metav1.DeletePropagationBackground
-	cleanupSecondsStr   = os.Getenv("CLEANUP_DELAY_SECONDS")
+	cleanupTimeoutStr   = os.Getenv("CLEANUP_TIMEOUT_SECONDS")
 	fileConfigPath      = os.Getenv("CLEANUP_FILE_CONFIG_PATH")
 	resourceConfigPath  = os.Getenv("CLEANUP_RESOURCE_CONFIG_PATH")
 	saName              = os.Getenv("CLEANUP_SA_NAME")
@@ -70,6 +75,9 @@ var (
 	roleBindingName     = os.Getenv("CLEANUP_ROLEBINDING_NAME")
 	enableGrpcServerStr = os.Getenv("CLEANUP_GRPC_SERVER_ENABLED")
 	grpcPortStr         = os.Getenv("CLEANUP_GRPC_SERVER_PORT")
+	deletionIntervalStr = os.Getenv("CLEANUP_DELETION_INTERVAL_SECONDS")
+	deletionTimeoutStr  = os.Getenv("CLEANUP_DELETION_TIMEOUT_SECONDS")
+	blockingDeletionStr = os.Getenv("CLEANUP_BLOCKING_DELETION")
 
 	ErrIllegalCleanupNotification = errors.New("illegally notified cleanup prior to cleanup resources call")
 )
@@ -132,23 +140,59 @@ func initConfig() {
 		resourceConfigPath = "/tmp/spectro-cleanup/resource-config.json"
 	}
 
+	var err error
+
 	// How long the spectro cleanup Pod/DaemonSet/Job will wait before self-destructing
-	if cleanupSecondsStr == "" {
-		cleanupSeconds = 30
+	if cleanupTimeoutStr == "" {
+		cleanupTimeout = 30 * time.Second
 	} else {
-		var err error
-		cleanupSeconds, err = strconv.ParseInt(cleanupSecondsStr, 10, 64)
+		cleanupSecondsInt, err := strconv.ParseInt(cleanupTimeoutStr, 10, 64)
+		if err != nil {
+			panic(err)
+		}
+		cleanupTimeout = time.Duration(cleanupSecondsInt) * time.Second
+	}
+
+	// How frequently to poll while verifying the deletion of each resource
+	if deletionIntervalStr == "" {
+		deletionInterval = 2 * time.Second
+	} else {
+		deletionIntervalSecondsInt, err := strconv.ParseInt(deletionIntervalStr, 10, 64)
+		if err != nil {
+			panic(err)
+		}
+		deletionInterval = time.Duration(deletionIntervalSecondsInt) * time.Second
+	}
+
+	// How long to poll while verifying the deletion of each resource
+	if deletionTimeoutStr == "" {
+		deletionTimeout = 300 * time.Second
+	} else {
+		deletionTimeoutInt, err := strconv.ParseInt(deletionTimeoutStr, 10, 64)
+		if err != nil {
+			panic(err)
+		}
+		deletionTimeout = time.Duration(deletionTimeoutInt) * time.Second
+	}
+
+	// Deletion configuration
+	if blockingDeletionStr != "" {
+		blockingDeletion, err = strconv.ParseBool(blockingDeletionStr)
 		if err != nil {
 			panic(err)
 		}
 	}
 
-	if enableGrpcServerStr == "true" {
-		enableGrpcServer = true
-
-		_, err := strconv.Atoi(grpcPortStr)
+	// gRPC server configuration
+	if enableGrpcServerStr != "" {
+		enableGrpcServer, err = strconv.ParseBool(enableGrpcServerStr)
 		if err != nil {
 			panic(err)
+		}
+		if enableGrpcServer {
+			if _, err := strconv.Atoi(grpcPortStr); err != nil {
+				panic(err)
+			}
 		}
 	}
 }
@@ -189,7 +233,7 @@ func cleanupFiles() {
 }
 
 // cleanupResources deletes all K8s resources specified in the resource cleanup config file
-func cleanupResources(ctx context.Context, client ctrlclient.Client, dynamic dynamic.Interface) {
+func cleanupResources(ctx context.Context, client ctrlclient.Client, dc dynamic.Interface) {
 	resourcesToDelete := []DeleteObj{}
 	bytes := readConfig(resourceConfigPath, ResourcesToDelete)
 	if err := json.Unmarshal(bytes, &resourcesToDelete); err != nil {
@@ -202,24 +246,30 @@ func cleanupResources(ctx context.Context, client ctrlclient.Client, dynamic dyn
 	for i, obj := range resourcesToDelete {
 		// the final object in the resource config must be the spectro-cleanup Pod/DaemonSet/Job
 		if i == numObjs-1 {
-			setOwnerReferences(ctx, client, dynamic, obj)
+			setOwnerReferences(ctx, client, dc, obj)
 
-			log.Info("Self destructing...", "maxDelaySeconds", cleanupSeconds)
+			log.Info("Self destructing...", "maxDelaySeconds", cleanupTimeout)
 			select {
 			case <-*notif:
 				log.Info("FinalizeCleanup notification received, self destructing")
-			case <-time.After(time.Duration(cleanupSeconds) * time.Second):
-				log.Info(fmt.Sprintf("%d seconds elapsed, self destructing", cleanupSeconds))
+			case <-time.After(cleanupTimeout):
+				log.Info(fmt.Sprintf("%d seconds elapsed, self destructing", cleanupTimeout))
 			}
 		}
 
 		gvrStr := obj.GroupVersionResource.String()
 		log.Info("Deleting resource", "name", obj.Name, "namespace", obj.Namespace, "gvr", gvrStr)
-		if err := dynamic.Resource(obj.GroupVersionResource).Namespace(obj.Namespace).Delete(
+		if err := dc.Resource(obj.GroupVersionResource).Namespace(obj.Namespace).Delete(
 			ctx, obj.Name, metav1.DeleteOptions{PropagationPolicy: &propagationPolicy},
 		); err != nil {
 			log.Error(err, "resource deletion failed")
 			continue
+		}
+		if blockingDeletion {
+			if err := waitForDeletion(ctx, dc, obj.GroupVersionResource, obj.Namespace, obj.Name); err != nil {
+				log.Error(err, "failed to verify resource deletion")
+				continue
+			}
 		}
 		log.Info("Resource deletion successful")
 	}
@@ -276,6 +326,19 @@ func setOwnerReferences(ctx context.Context, client ctrlclient.Client, dynamic d
 		panic(err)
 	}
 	log.Info("Set cleanup ownerReference", "roleBinding", roleBindingName)
+}
+
+func waitForDeletion(ctx context.Context, dc dynamic.Interface, gvr schema.GroupVersionResource, namespace, name string) error {
+	return wait.PollUntilContextTimeout(ctx, deletionInterval, deletionTimeout, true, func(context.Context) (bool, error) {
+		_, err := dc.Resource(gvr).Namespace(namespace).Get(context.TODO(), name, metav1.GetOptions{})
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				return true, nil
+			}
+			return false, err
+		}
+		return false, nil
+	})
 }
 
 func startGRPCServer(wg *sync.WaitGroup) {
