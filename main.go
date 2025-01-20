@@ -65,7 +65,7 @@ var (
 	deletionInterval    time.Duration
 	deletionTimeout     time.Duration
 	enableGrpcServer    bool
-	blockingDeletion    bool
+	blockingDeletion    = true
 	propagationPolicy   = metav1.DeletePropagationBackground
 	cleanupTimeoutStr   = os.Getenv("CLEANUP_TIMEOUT_SECONDS")
 	fileConfigPath      = os.Getenv("CLEANUP_FILE_CONFIG_PATH")

@@ -312,6 +312,8 @@ To ensure that spectro-cleanup itself is cleaned up after its finished getting r
 you'll need to ensure that the final objects in your `resource-config.json` are the spectro-cleanup `configmaps` and the `daemonset/job/pod`.
 If there are any resources added to the `resource-config.json` _after_ the two aformentioned spectro-cleanup resources, they will not be cleaned up.
 
+By default, delete operations for kubernetes resources are blocking. The cleanup process will poll until the resource is fully removed from the API server. You can customize this behaviour via `CLEANUP_BLOCKING_DELETION` (defaults to `true`). The polling interval and timeout default to 2s and 5m, respectively, and be customized via `CLEANUP_DELETION_INTERVAL_SECONDS`, and `CLEANUP_DELETION_TIMEOUT_SECONDS`.
+
 You can also optionally configure a gRPC server to run as a part of spectro-cleanup. This server has a single endpoint, `FinalizeCleanup`.
 When this server is configured, spectro-cleanup will be able to wait for a request that notifies it that it can finally clean itself up.
 In this case, the `CLEANUP_TIMEOUT_SECONDS` env var will have the fallback time to self destruct in the case that a request is never made to the `FinalizeCleanup` endpoint.
