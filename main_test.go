@@ -116,7 +116,6 @@ func TestInitConfig(t *testing.T) {
 			if enableGrpcServer != tt.expectedGRPC {
 				t.Errorf("expected enableGrpcServer %v, got %v", tt.expectedGRPC, enableGrpcServer)
 			}
-
 		})
 	}
 }
