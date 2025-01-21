@@ -22,24 +22,33 @@ func TestInitConfig(t *testing.T) {
 		roleBindingName     string
 		enableGrpcServerStr string
 		grcpPortStr         string
+		deletionIntervalStr string
+		deletionTimeoutStr  string
+		blockingDeletionStr string
 
-		expectedCleanup            int64
+		expectedCleanup            time.Duration
 		expectedFileConfigPath     string
 		expectedResourceConfigPath string
 		expectedSaName             string
 		expectedRoleName           string
 		expectedRoleBindingName    string
 		expectedGRPC               bool
+		expectedDeletionInterval   time.Duration
+		expectedDeletionTimeout    time.Duration
+		expectedBlockingDeletion   bool
 	}{
 		{
 			name:                       "no vars set",
-			expectedCleanup:            30,
+			expectedCleanup:            30 * time.Second,
 			expectedFileConfigPath:     "/tmp/spectro-cleanup/file-config.json",
 			expectedResourceConfigPath: "/tmp/spectro-cleanup/resource-config.json",
 			expectedSaName:             "spectro-cleanup",
 			expectedRoleName:           "spectro-cleanup-role",
 			expectedRoleBindingName:    "spectro-cleanup-rolebinding",
 			expectedGRPC:               false,
+			expectedBlockingDeletion:   false,
+			expectedDeletionInterval:   2 * time.Second,
+			expectedDeletionTimeout:    300 * time.Second,
 		},
 		{
 			name:                "all vars set to non default values",
@@ -51,25 +60,31 @@ func TestInitConfig(t *testing.T) {
 			roleBindingName:     "new-role-binding-name",
 			enableGrpcServerStr: "true",
 			grcpPortStr:         "1234",
+			deletionIntervalStr: "10",
+			deletionTimeoutStr:  "100",
+			blockingDeletionStr: "true",
 
-			expectedCleanup:            100,
+			expectedCleanup:            100 * time.Second,
 			expectedFileConfigPath:     "new-file-config-path.json",
 			expectedResourceConfigPath: "new-resource-config-path.json",
 			expectedSaName:             "new-sa-name",
 			expectedRoleName:           "new-role-name",
 			expectedRoleBindingName:    "new-role-binding-name",
 			expectedGRPC:               true,
+			expectedDeletionInterval:   10 * time.Second,
+			expectedDeletionTimeout:    100 * time.Second,
+			expectedBlockingDeletion:   true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// set all vars to default values
-			cleanupSeconds = 0
+			cleanupTimeout = 0
 			enableGrpcServer = false
 
 			// initialize env vars
-			cleanupSecondsStr = tt.cleanupSecondsStr
+			cleanupTimeoutStr = tt.cleanupSecondsStr
 			fileConfigPath = tt.fileConfigPath
 			resourceConfigPath = tt.resourceConfigPath
 			saName = tt.saName
@@ -80,8 +95,8 @@ func TestInitConfig(t *testing.T) {
 
 			initConfig()
 
-			if cleanupSeconds != tt.expectedCleanup {
-				t.Errorf("expected cleanupSeconds %d, got %d", tt.expectedCleanup, cleanupSeconds)
+			if cleanupTimeout != tt.expectedCleanup {
+				t.Errorf("expected cleanupSeconds %d, got %d", tt.expectedCleanup, cleanupTimeout)
 			}
 			if fileConfigPath != tt.expectedFileConfigPath {
 				t.Errorf("expected fileConfigPath %s, got %s", tt.expectedFileConfigPath, fileConfigPath)
