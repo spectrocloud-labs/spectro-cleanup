@@ -271,8 +271,8 @@ func (c *Cleaner) setOwnerReferences(ctx context.Context, client ctrlclient.Clie
 	log.Info("Set cleanup ownerReference", "role", c.roleName)
 
 	rb := &rbacv1.RoleBinding{}
+	key = types.NamespacedName{Namespace: obj.Namespace, Name: c.roleBindingName}
 	if err := client.Get(context.Background(), key, rb); err != nil {
-		key = types.NamespacedName{Namespace: obj.Namespace, Name: c.roleBindingName}
 		panic(err)
 	}
 	patch = ctrlclient.MergeFrom(rb.DeepCopy())
