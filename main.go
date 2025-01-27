@@ -253,7 +253,7 @@ func cleanupResources(ctx context.Context, client ctrlclient.Client, dc dynamic.
 			case <-*notif:
 				log.Info("FinalizeCleanup notification received, self destructing")
 			case <-time.After(cleanupTimeout):
-				log.Info(fmt.Sprintf("%d seconds elapsed, self destructing", cleanupTimeout))
+				log.Info(fmt.Sprintf("%.0f seconds elapsed, self destructing", cleanupTimeout.Seconds()))
 			}
 		}
 
