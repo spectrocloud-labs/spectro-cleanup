@@ -270,9 +270,8 @@ spec:
       - name: spectro-cleanup
         image: gcr.io/spectro-images-public/release/spectro-cleanup:1.2.0
         command: ["/cleanup"]
-        env:
-        - name: CLEANUP_DELAY_SECONDS
-          value: "10"
+        args:
+        - --cleanup-timeout-seconds=10
         resources:
           requests:
             cpu: "10m"
@@ -312,11 +311,12 @@ To ensure that spectro-cleanup itself is cleaned up after its finished getting r
 you'll need to ensure that the final objects in your `resource-config.json` are the spectro-cleanup `configmaps` and the `daemonset/job/pod`.
 If there are any resources added to the `resource-config.json` _after_ the two aformentioned spectro-cleanup resources, they will not be cleaned up.
 
-By default, delete operations for kubernetes resources are blocking. The cleanup process will poll until the resource is fully removed from the API server. You can customize this behaviour via `CLEANUP_BLOCKING_DELETION` (defaults to `true`). The polling interval and timeout default to 2s and 5m, respectively, and be customized via `CLEANUP_DELETION_INTERVAL_SECONDS`, and `CLEANUP_DELETION_TIMEOUT_SECONDS`.
+By default, delete operations for kubernetes resources are blocking. The cleanup process will poll until the resource is fully removed from the API server. You can customize this behaviour via `--blocking-deletion` (defaults to `true`). The polling interval and timeout default to 2s and 5m, respectively, and be customized via `--deletion-interval-seconds`, and `--deletion-timeout-seconds`.
 
 You can also optionally configure a gRPC server to run as a part of spectro-cleanup. This server has a single endpoint, `FinalizeCleanup`.
 When this server is configured, spectro-cleanup will be able to wait for a request that notifies it that it can finally clean itself up.
-In this case, the `CLEANUP_TIMEOUT_SECONDS` env var will have the fallback time to self destruct in the case that a request is never made to the `FinalizeCleanup` endpoint.
+In this case, the `--cleanup-timeout-seconds` flag will have the fallback time to self destruct in the case that a request is never made to the `FinalizeCleanup` endpoint.
+
 Below you can see an example of how to configure the gRPC server on your daemonset or job:
 ```yaml
 apiVersion: batch/v1
@@ -337,14 +337,11 @@ spec:
       - name: validator-cleanup
         image: {{ required ".Values.cleanup.image is required!" .Values.cleanup.image }}
         command: ["/cleanup"]
-        env:
-        - name: CLEANUP_TIMEOUT_SECONDS
-          value: "300"
+        args:
+        - --cleanup-timeout-seconds=300
         {{- if .Values.cleanup.grpcServerEnabled }}
-        - name: CLEANUP_GRPC_SERVER_ENABLED
-          value: "true"
-        - name: CLEANUP_GRPC_SERVER_PORT
-          value: {{ required ".Values.cleanup.port is required!" .Values.cleanup.port | toString | quote }}
+        - --enable-grpc-server
+        - --grpc-port={{ required ".Values.cleanup.port is required!" .Values.cleanup.port | toString | quote }}
         {{- end }}
         resources:
           requests:
@@ -365,5 +362,5 @@ spec:
               path: resource-config.json
 
 ```
-The main things to note here are that all three of the `CLEANUP_GRPC_SERVER_ENABLED`, `CLEANUP_GRPC_SERVER_PORT`, and `CLEANUP_TIMEOUT_SECONDS` env vars are set.
+The main things to note here are that all three of the `--enable-grpc-server`, `--grpc-port`, and `--cleanup-timeout-seconds` flags are set.
 You can see more about how this configuration is setup in the [validator repo](https://github.com/validator-labs/validator/blob/86457a3b47efbf05bb6380589b45c35e62fe70fa/chart/validator/templates/cleanup.yaml#L103).
