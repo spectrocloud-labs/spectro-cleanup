@@ -364,3 +364,58 @@ spec:
 ```
 The main things to note here are that all three of the `--enable-grpc-server`, `--grpc-port`, and `--cleanup-timeout-seconds` flags are set.
 You can see more about how this configuration is setup in the [validator repo](https://github.com/validator-labs/validator/blob/86457a3b47efbf05bb6380589b45c35e62fe70fa/chart/validator/templates/cleanup.yaml#L103).
+
+If you'd like to cleanup cluster scoped resources, you'll need to provide both the `--cluster-role-name` and `--cluster-role-binding-name` flags.
+Otherwise, spectro-cleanup will operate using the default or prived `--role-name` and `--role-binding-name` values.
+Below is an example of a valid `ClusterRole` and `ClusterRoleBinding` for this configuration.
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: spectro-cleanup-role
+rules:
+- apiGroups:
+  - admissionregistration.k8s.io
+  resources:
+  - validatingwebhookconfigurations
+  - mutatingwebhookconfigurations
+  verbs:
+  - get
+  - delete
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  - serviceaccounts
+  verbs:
+  - '*'
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - '*'
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - roles
+  - rolebindings
+  - clusterroles
+  - clusterrolebindings
+  verbs:
+  - '*'
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: spectro-cleanup-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: spectro-cleanup-role
+subjects:
+  - kind: ServiceAccount
+    name: spectro-cleanup
+    namespace: kube-system
+```

@@ -69,17 +69,19 @@ func init() {
 }
 
 type Cleaner struct {
-	cleanupTimeout     time.Duration
-	deletionInterval   time.Duration
-	deletionTimeout    time.Duration
-	blockingDeletion   bool
-	enableGrpcServer   bool
-	grpcPort           int
-	fileConfigPath     string
-	resourceConfigPath string
-	saName             string
-	roleName           string
-	roleBindingName    string
+	cleanupTimeout         time.Duration
+	deletionInterval       time.Duration
+	deletionTimeout        time.Duration
+	blockingDeletion       bool
+	enableGrpcServer       bool
+	grpcPort               int
+	fileConfigPath         string
+	resourceConfigPath     string
+	saName                 string
+	roleName               string
+	roleBindingName        string
+	clusterRoleName        string
+	clusterRoleBindingName string
 }
 
 type DeleteObj struct {
@@ -96,13 +98,15 @@ func main() {
 	)
 
 	c := &Cleaner{
-		blockingDeletion:   true,
-		grpcPort:           8080,
-		fileConfigPath:     "/tmp/spectro-cleanup/file-config.json",
-		resourceConfigPath: "/tmp/spectro-cleanup/resource-config.json",
-		saName:             "spectro-cleanup",
-		roleName:           "spectro-cleanup-role",
-		roleBindingName:    "spectro-cleanup-rolebinding",
+		blockingDeletion:       true,
+		grpcPort:               8080,
+		fileConfigPath:         "/tmp/spectro-cleanup/file-config.json",
+		resourceConfigPath:     "/tmp/spectro-cleanup/resource-config.json",
+		saName:                 "spectro-cleanup",
+		roleName:               "spectro-cleanup-role",
+		roleBindingName:        "spectro-cleanup-rolebinding",
+		clusterRoleName:        "",
+		clusterRoleBindingName: "",
 	}
 
 	flag.BoolVar(&c.blockingDeletion, "blocking-deletion", c.blockingDeletion, "Block until each resource is deleted before proceeding to the next")
@@ -116,6 +120,12 @@ func main() {
 	flag.StringVar(&c.saName, "sa-name", c.saName, "ServiceAccount name for cleanup Pod/DaemonSet/Job")
 	flag.StringVar(&c.roleName, "role-name", c.roleName, "Role name for cleanup Pod/DaemonSet/Job")
 	flag.StringVar(&c.roleBindingName, "role-binding-name", c.roleBindingName, "RoleBinding name for cleanup Pod/DaemonSet/Job")
+	flag.StringVar(&c.clusterRoleName, "cluster-role-name", c.roleName, "ClusterRole name for cleanup Pod/DaemonSet/Job. If set, role-name will be ignored.")
+	flag.StringVar(&c.clusterRoleBindingName, "cluster-role-binding-name", c.roleBindingName, "ClusterRoleBinding name for cleanup Pod/DaemonSet/Job. If set, role-binding-name will be ignored.")
+
+	if c.clusterRoleName == "" && c.clusterRoleBindingName != "" || c.clusterRoleName != "" && c.clusterRoleBindingName == "" {
+		panic("cluster-role-name and cluster-role-binding-name must be set together")
+	}
 
 	opts := zap.Options{
 		Development: true,
@@ -150,6 +160,10 @@ func main() {
 
 	wg.Wait()
 	os.Exit(0)
+}
+
+func (c *Cleaner) useClusterRole() bool {
+	return c.clusterRoleName != "" && c.clusterRoleBindingName != ""
 }
 
 // readConfig loads a configuration file from the local filesystem
@@ -235,6 +249,7 @@ func (c *Cleaner) cleanupResources(ctx context.Context, client ctrlclient.Client
 
 // setOwnerReferences ensures garbage collection of RBAC resources used by cleanup Pod/DaemonSet/Job post self-destruction
 func (c *Cleaner) setOwnerReferences(ctx context.Context, client ctrlclient.Client, dynamic dynamic.Interface, obj DeleteObj) {
+	// Fetch the owner resource
 	owner, err := dynamic.Resource(obj.GroupVersionResource).Namespace(obj.Namespace).Get(ctx, obj.Name, metav1.GetOptions{})
 	if err != nil {
 		panic(err)
@@ -246,41 +261,37 @@ func (c *Cleaner) setOwnerReferences(ctx context.Context, client ctrlclient.Clie
 		UID:        owner.GetUID(),
 	}
 
-	sa := &corev1.ServiceAccount{}
-	key := types.NamespacedName{Namespace: obj.Namespace, Name: c.saName}
-	if err := client.Get(context.Background(), key, sa); err != nil {
-		panic(err)
-	}
-	patch := ctrlclient.MergeFrom(sa.DeepCopy())
-	sa.ObjectMeta.OwnerReferences = append(sa.ObjectMeta.OwnerReferences, ownerRef)
-	if err := client.Patch(context.Background(), sa, patch); err != nil {
-		panic(err)
-	}
-	log.Info("Set cleanup ownerReference", "serviceAccount", c.saName)
+	saKey := types.NamespacedName{Namespace: obj.Namespace, Name: c.saName}
+	c.setOwnerReferenceForResource(ctx, client, saKey, ownerRef, &corev1.ServiceAccount{}, "serviceAccount")
 
-	role := &rbacv1.Role{}
-	key = types.NamespacedName{Namespace: obj.Namespace, Name: c.roleName}
-	if err := client.Get(context.Background(), key, role); err != nil {
-		panic(err)
-	}
-	patch = ctrlclient.MergeFrom(role.DeepCopy())
-	role.ObjectMeta.OwnerReferences = append(role.ObjectMeta.OwnerReferences, ownerRef)
-	if err := client.Patch(context.Background(), role, patch); err != nil {
-		panic(err)
-	}
-	log.Info("Set cleanup ownerReference", "role", c.roleName)
+	if c.useClusterRole() {
+		clusterRoleKey := types.NamespacedName{Name: c.clusterRoleName}
+		c.setOwnerReferenceForResource(ctx, client, clusterRoleKey, ownerRef, &rbacv1.ClusterRole{}, "clusterRole")
 
-	rb := &rbacv1.RoleBinding{}
-	key = types.NamespacedName{Namespace: obj.Namespace, Name: c.roleBindingName}
-	if err := client.Get(context.Background(), key, rb); err != nil {
+		clusterRoleBindingKey := types.NamespacedName{Name: c.clusterRoleBindingName}
+		c.setOwnerReferenceForResource(ctx, client, clusterRoleBindingKey, ownerRef, &rbacv1.ClusterRoleBinding{}, "clusterRoleBinding")
+	} else {
+		roleKey := types.NamespacedName{Namespace: obj.Namespace, Name: c.roleName}
+		c.setOwnerReferenceForResource(ctx, client, roleKey, ownerRef, &rbacv1.Role{}, "role")
+
+		roleBindingKey := types.NamespacedName{Namespace: obj.Namespace, Name: c.roleBindingName}
+		c.setOwnerReferenceForResource(ctx, client, roleBindingKey, ownerRef, &rbacv1.RoleBinding{}, "roleBinding")
+	}
+}
+
+// setOwnerReferenceForResource is a helper function to set an owner reference on a Kubernetes resource.
+func (c *Cleaner) setOwnerReferenceForResource(ctx context.Context, client ctrlclient.Client, key types.NamespacedName, ownerRef metav1.OwnerReference, obj ctrlclient.Object, resourceName string) {
+	if err := client.Get(ctx, key, obj); err != nil {
 		panic(err)
 	}
-	patch = ctrlclient.MergeFrom(rb.DeepCopy())
-	rb.ObjectMeta.OwnerReferences = append(rb.ObjectMeta.OwnerReferences, ownerRef)
-	if err := client.Patch(context.Background(), rb, patch); err != nil {
+
+	patch := ctrlclient.MergeFrom(obj.DeepCopyObject().(ctrlclient.Object))
+	obj.SetOwnerReferences(append(obj.GetOwnerReferences(), ownerRef))
+	if err := client.Patch(ctx, obj, patch); err != nil {
 		panic(err)
 	}
-	log.Info("Set cleanup ownerReference", "roleBinding", c.roleBindingName)
+
+	log.Info("Set cleanup ownerReference", resourceName, key.Name)
 }
 
 func (c *Cleaner) waitForDeletion(ctx context.Context, dc dynamic.Interface, gvr schema.GroupVersionResource, namespace, name string) error {
