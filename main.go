@@ -249,7 +249,6 @@ func (c *Cleaner) cleanupResources(ctx context.Context, client ctrlclient.Client
 
 // setOwnerReferences ensures garbage collection of RBAC resources used by cleanup Pod/DaemonSet/Job post self-destruction
 func (c *Cleaner) setOwnerReferences(ctx context.Context, client ctrlclient.Client, dynamic dynamic.Interface, obj DeleteObj) {
-	// Fetch the owner resource
 	owner, err := dynamic.Resource(obj.GroupVersionResource).Namespace(obj.Namespace).Get(ctx, obj.Name, metav1.GetOptions{})
 	if err != nil {
 		panic(err)
