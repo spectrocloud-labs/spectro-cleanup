@@ -366,7 +366,7 @@ The main things to note here are that all three of the `--enable-grpc-server`, `
 You can see more about how this configuration is setup in the [validator repo](https://github.com/validator-labs/validator/blob/86457a3b47efbf05bb6380589b45c35e62fe70fa/chart/validator/templates/cleanup.yaml#L103).
 
 If you'd like to cleanup cluster scoped resources, you'll need to provide both the `--cluster-role-name` and `--cluster-role-binding-name` flags.
-Otherwise, spectro-cleanup will operate using the default or prived `--role-name` and `--role-binding-name` values.
+Otherwise, spectro-cleanup will operate using the default or provided `--role-name` and `--role-binding-name` values.
 Below is an example of a valid `ClusterRole` and `ClusterRoleBinding` for this configuration.
 
 ```yaml
