@@ -21,22 +21,23 @@ import (
 	"flag"
 	"fmt"
 	"io/fs"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"buf.build/gen/go/spectrocloud/spectro-cleanup/connectrpc/go/cleanup/v1/cleanupv1connect"
 	cleanv1 "buf.build/gen/go/spectrocloud/spectro-cleanup/protocolbuffers/go/cleanup/v1"
-
 	connect "connectrpc.com/connect"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
-	corev1 "k8s.io/api/core/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -45,30 +46,40 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/dynamic"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	ctrl "sigs.k8s.io/controller-runtime"
-	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/util/retry"
 )
 
 const (
-	FilesToDelete     = "filesToDelete"
-	ResourcesToDelete = "resourcesToDelete"
+	filesToDelete     = "filesToDelete"
+	resourcesToDelete = "resourcesToDelete"
 )
 
 var (
 	scheme            = runtime.NewScheme()
-	log               = ctrl.Log.WithName("spectro-cleanup")
 	notif             = new(chan bool)
 	propagationPolicy = metav1.DeletePropagationBackground
 
 	ErrIllegalCleanupNotification = errors.New("illegally notified cleanup prior to cleanup resources call")
+
+	clusterRoleGVR        = schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterroles"}
+	clusterRoleBindingGVR = schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterrolebindings"}
+	roleGVR               = schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "roles"}
+	roleBindingGVR        = schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "rolebindings"}
+	serviceAccountGVR     = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "serviceaccounts"}
 )
 
 func init() {
-	_ = clientgoscheme.AddToScheme(scheme)
+	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
+
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		log.Fatal().Err(err).Msg("failed to add client-go scheme")
+	}
 }
 
+// Cleaner is responsible for cleaning up resources and files.
 type Cleaner struct {
+	debug                  bool
 	cleanupTimeout         time.Duration
 	deletionInterval       time.Duration
 	deletionTimeout        time.Duration
@@ -84,10 +95,20 @@ type Cleaner struct {
 	clusterRoleBindingName string
 }
 
+// DeleteObj is a struct that represents a Kubernetes resource to be deleted.
 type DeleteObj struct {
 	schema.GroupVersionResource
-	Name      string
-	Namespace string
+
+	// Name is the name of the resource to be deleted.
+	Name string `json:"name"`
+
+	// Namespace is the namespace of the resource to be deleted.
+	Namespace string `json:"namespace"`
+
+	// MustDelete is a flag that indicates if the resource must be deleted.
+	// If true, the cleanup will fail if the resource is not deleted.
+	// If false, the cleanup will continue even if the resource is not deleted.
+	MustDelete bool `json:"mustDelete"`
 }
 
 func main() {
@@ -123,21 +144,27 @@ func main() {
 	flag.StringVar(&c.clusterRoleName, "cluster-role-name", c.roleName, "ClusterRole name for cleanup Pod/DaemonSet/Job. If set, role-name will be ignored.")
 	flag.StringVar(&c.clusterRoleBindingName, "cluster-role-binding-name", c.roleBindingName, "ClusterRoleBinding name for cleanup Pod/DaemonSet/Job. If set, role-binding-name will be ignored.")
 
+	flag.BoolVar(&c.debug, "debug", c.debug, "Enable debug logging")
+
 	if c.clusterRoleName == "" && c.clusterRoleBindingName != "" || c.clusterRoleName != "" && c.clusterRoleBindingName == "" {
-		panic("cluster-role-name and cluster-role-binding-name must be set together")
+		log.Fatal().Msg("cluster-role-name and cluster-role-binding-name must be set together")
 	}
 
-	opts := zap.Options{
-		Development: true,
-	}
-	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
+
+	// Default level for this example is info, unless debug flag is present
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	if c.debug {
+		zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	}
 
 	c.cleanupTimeout = time.Duration(cleanupTimeoutSeconds) * time.Second
 	c.deletionInterval = time.Duration(deletionIntervalSeconds) * time.Second
 	c.deletionTimeout = time.Duration(deletionTimeoutSeconds) * time.Second
 
-	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+	log.Info().Msg("Starting spectro-cleanup")
+	startTime := time.Now()
+
 	ctx := context.Background()
 
 	var wg sync.WaitGroup
@@ -146,19 +173,43 @@ func main() {
 		go c.startGRPCServer(&wg)
 	}
 
-	config := ctrl.GetConfigOrDie()
-	client, err := ctrlclient.New(config, ctrlclient.Options{
-		Scheme: scheme,
-	})
+	config, err := rest.InClusterConfig()
 	if err != nil {
-		panic(err)
+		log.Fatal().Err(err).Msg("failed to create in-cluster config")
 	}
-	dynamic := dynamic.NewForConfigOrDie(config)
+
+	// Increase timeouts for the HTTP client
+	config.Timeout = time.Second * 30
+	transport, err := rest.TransportFor(config)
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to create HTTP transport")
+	}
+	if httpTransport, ok := transport.(*http.Transport); ok {
+		httpTransport.TLSHandshakeTimeout = time.Second * 15
+		httpTransport.ResponseHeaderTimeout = time.Second * 30
+		httpTransport.ExpectContinueTimeout = time.Second * 10
+	}
+
+	dc, err := dynamic.NewForConfig(config)
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to create dynamic client")
+	}
 
 	c.cleanupFiles()
-	c.cleanupResources(ctx, client, dynamic)
+	log.Info().
+		Str("duration", time.Since(startTime).String()).
+		Msg("File cleanup complete")
+
+	c.cleanupResources(ctx, dc)
+	log.Info().
+		Str("duration", time.Since(startTime).String()).
+		Msg("Resource cleanup complete")
 
 	wg.Wait()
+	log.Info().
+		Str("totalDuration", time.Since(startTime).String()).
+		Msg("Cleanup finished")
+
 	os.Exit(0)
 }
 
@@ -169,78 +220,119 @@ func (c *Cleaner) useClusterRole() bool {
 // readConfig loads a configuration file from the local filesystem
 func readConfig(path, configType string) []byte {
 	path = filepath.Clean(path)
-	log.Info("Reading Spectro Cleanup config", "path", path, "configType", configType)
+	log.Debug().
+		Str("path", path).
+		Str("configType", configType).
+		Msg("Reading Spectro Cleanup config")
 	bytes, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		log.Info("WARNING: config file not found. Skipping.", "configType", configType)
+		log.Debug().
+			Str("configType", configType).
+			Msg("WARNING: config file not found. Skipping.")
 		return nil
 	} else if err != nil {
-		panic(err)
+		log.Fatal().Err(err).Msg("failed to read config file")
 	}
 	return bytes
 }
 
 // cleanupFiles deletes all files specified in the file cleanup config file
 func (c *Cleaner) cleanupFiles() {
-	filesToDelete := []string{}
-	bytes := readConfig(c.fileConfigPath, FilesToDelete)
+	files := []string{}
+	bytes := readConfig(c.fileConfigPath, filesToDelete)
 	if bytes == nil {
 		return
 	}
-	if err := json.Unmarshal(bytes, &filesToDelete); err != nil {
-		panic(err)
+	if err := json.Unmarshal(bytes, &files); err != nil {
+		log.Fatal().Err(err).Msg("failed to unmarshal file cleanup config")
 	}
 
-	for _, filePath := range filesToDelete {
-		log.Info("Deleting file", "path", filePath)
+	for _, filePath := range files {
+		log.Info().Str("path", filePath).Msg("Deleting file")
 		if err := os.Remove(filePath); err != nil {
-			log.Error(err, "file deletion failed")
+			log.Error().Err(err).Msg("file deletion failed")
 			continue
 		}
-		log.Info("File deletion successful")
+		log.Info().Msg("File deletion successful")
 	}
 }
 
 // cleanupResources deletes all K8s resources specified in the resource cleanup config file
-func (c *Cleaner) cleanupResources(ctx context.Context, client ctrlclient.Client, dc dynamic.Interface) {
-	resourcesToDelete := []DeleteObj{}
-	bytes := readConfig(c.resourceConfigPath, ResourcesToDelete)
-	if err := json.Unmarshal(bytes, &resourcesToDelete); err != nil {
-		panic(err)
+func (c *Cleaner) cleanupResources(ctx context.Context, dc dynamic.Interface) {
+	resources := []DeleteObj{}
+	bytes := readConfig(c.resourceConfigPath, resourcesToDelete)
+	if err := json.Unmarshal(bytes, &resources); err != nil {
+		log.Fatal().Err(err).Msg("failed to unmarshal resource cleanup config")
 	}
 
 	*notif = make(chan bool)
 
-	numObjs := len(resourcesToDelete)
-	for i, obj := range resourcesToDelete {
+	numObjs := len(resources)
+	for i, obj := range resources {
 		// the final object in the resource config must be the spectro-cleanup Pod/DaemonSet/Job
 		if i == numObjs-1 {
-			c.setOwnerReferences(ctx, client, dc, obj)
+			c.setOwnerReferences(ctx, dc, obj)
 
-			log.Info("Self destructing...", "maxDelaySeconds", c.cleanupTimeout)
-			select {
-			case <-*notif:
-				log.Info("FinalizeCleanup notification received, self destructing")
-			case <-time.After(c.cleanupTimeout):
-				log.Info(fmt.Sprintf("%.0f seconds elapsed, self destructing", c.cleanupTimeout.Seconds()))
+			// If blockingDeletion is true, we've already waited for all resources to be deleted,
+			// therefore we can self destruct immediately.
+			if c.blockingDeletion {
+				log.Info().Msg("Self destructing...")
+			} else {
+				log.Info().
+					Str("maxDelaySeconds", fmt.Sprintf("%.0f", c.cleanupTimeout.Seconds())).
+					Msg("Self destructing...")
+				select {
+				case <-*notif:
+					log.Info().Msg("FinalizeCleanup notification received, self destructing")
+				case <-time.After(c.cleanupTimeout):
+					log.Info().Msg(fmt.Sprintf("%.0f seconds elapsed, self destructing", c.cleanupTimeout.Seconds()))
+				}
 			}
 		}
 
-		gvrStr := obj.GroupVersionResource.String()
-		log.Info("Deleting resource", "name", obj.Name, "namespace", obj.Namespace, "gvr", gvrStr)
-		if err := dc.Resource(obj.GroupVersionResource).Namespace(obj.Namespace).Delete(
-			ctx, obj.Name, metav1.DeleteOptions{PropagationPolicy: &propagationPolicy},
-		); err != nil {
-			log.Error(err, "resource deletion failed")
-			continue
+		log.Info().
+			Str("name", obj.Name).
+			Str("namespace", obj.Namespace).
+			Str("gvr", obj.GroupVersionResource.String()).
+			Msg("Deleting resource")
+
+		// Retry delete operation
+		err := retry.OnError(wait.Backoff{
+			Steps:    5,
+			Duration: 1 * time.Second,
+			Factor:   2.0,
+			Jitter:   0.1,
+			Cap:      30 * time.Second,
+		}, func(err error) bool {
+			// Retry on network errors and server errors
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				log.Debug().Str("error", err.Error()).Msg("Network error, retrying...")
+				return true
+			}
+			if strings.Contains(err.Error(), "TLS handshake timeout") {
+				log.Debug().Str("error", err.Error()).Msg("TLS handshake timeout, retrying...")
+				return true
+			}
+			return false
+		}, func() error {
+			return dc.Resource(obj.GroupVersionResource).Namespace(obj.Namespace).Delete(
+				ctx, obj.Name, metav1.DeleteOptions{PropagationPolicy: &propagationPolicy},
+			)
+		})
+		if err != nil {
+			if obj.MustDelete {
+				log.Fatal().Err(err).Msg("resource deletion failed after retries")
+			}
+			log.Warn().Err(err).Msg("resource deletion failed after retries")
 		}
+
+		// Deletion has been initiated. If blockingDeletion is true, wait for the resource to be deleted.
 		if c.blockingDeletion {
 			if err := c.waitForDeletion(ctx, dc, obj.GroupVersionResource, obj.Namespace, obj.Name); err != nil {
-				log.Error(err, "failed to verify resource deletion")
+				log.Error().Err(err).Msg("failed to verify resource deletion")
 				continue
 			}
 		}
-		log.Info("Resource deletion successful")
 	}
 
 	close(*notif)
@@ -248,10 +340,10 @@ func (c *Cleaner) cleanupResources(ctx context.Context, client ctrlclient.Client
 }
 
 // setOwnerReferences ensures garbage collection of RBAC resources used by cleanup Pod/DaemonSet/Job post self-destruction
-func (c *Cleaner) setOwnerReferences(ctx context.Context, client ctrlclient.Client, dynamic dynamic.Interface, obj DeleteObj) {
-	owner, err := dynamic.Resource(obj.GroupVersionResource).Namespace(obj.Namespace).Get(ctx, obj.Name, metav1.GetOptions{})
+func (c *Cleaner) setOwnerReferences(ctx context.Context, dc dynamic.Interface, obj DeleteObj) {
+	owner, err := dc.Resource(obj.GroupVersionResource).Namespace(obj.Namespace).Get(ctx, obj.Name, metav1.GetOptions{})
 	if err != nil {
-		panic(err)
+		log.Fatal().Err(err).Msg("failed to get resource")
 	}
 	ownerRef := metav1.OwnerReference{
 		APIVersion: owner.GetAPIVersion(),
@@ -261,47 +353,59 @@ func (c *Cleaner) setOwnerReferences(ctx context.Context, client ctrlclient.Clie
 	}
 
 	saKey := types.NamespacedName{Namespace: obj.Namespace, Name: c.saName}
-	c.setOwnerReferenceForResource(ctx, client, saKey, ownerRef, &corev1.ServiceAccount{}, "serviceAccount")
+	c.setOwnerReferenceForResource(ctx, dc, saKey, ownerRef, serviceAccountGVR)
 
 	if c.useClusterRole() {
 		clusterRoleKey := types.NamespacedName{Name: c.clusterRoleName}
-		c.setOwnerReferenceForResource(ctx, client, clusterRoleKey, ownerRef, &rbacv1.ClusterRole{}, "clusterRole")
+		c.setOwnerReferenceForResource(ctx, dc, clusterRoleKey, ownerRef, clusterRoleGVR)
 
 		clusterRoleBindingKey := types.NamespacedName{Name: c.clusterRoleBindingName}
-		c.setOwnerReferenceForResource(ctx, client, clusterRoleBindingKey, ownerRef, &rbacv1.ClusterRoleBinding{}, "clusterRoleBinding")
+		c.setOwnerReferenceForResource(ctx, dc, clusterRoleBindingKey, ownerRef, clusterRoleBindingGVR)
 	} else {
 		roleKey := types.NamespacedName{Namespace: obj.Namespace, Name: c.roleName}
-		c.setOwnerReferenceForResource(ctx, client, roleKey, ownerRef, &rbacv1.Role{}, "role")
+		c.setOwnerReferenceForResource(ctx, dc, roleKey, ownerRef, roleGVR)
 
 		roleBindingKey := types.NamespacedName{Namespace: obj.Namespace, Name: c.roleBindingName}
-		c.setOwnerReferenceForResource(ctx, client, roleBindingKey, ownerRef, &rbacv1.RoleBinding{}, "roleBinding")
+		c.setOwnerReferenceForResource(ctx, dc, roleBindingKey, ownerRef, roleBindingGVR)
 	}
 }
 
 // setOwnerReferenceForResource is a helper function to set an owner reference on a Kubernetes resource.
-func (c *Cleaner) setOwnerReferenceForResource(ctx context.Context, client ctrlclient.Client, key types.NamespacedName, ownerRef metav1.OwnerReference, obj ctrlclient.Object, resourceName string) {
-	if err := client.Get(ctx, key, obj); err != nil {
-		panic(err)
+func (c *Cleaner) setOwnerReferenceForResource(ctx context.Context, dc dynamic.Interface, key types.NamespacedName, ownerRef metav1.OwnerReference, gvr schema.GroupVersionResource) {
+	resource, err := dc.Resource(gvr).Namespace(key.Namespace).Get(ctx, key.Name, metav1.GetOptions{})
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to get resource")
 	}
 
-	patch := ctrlclient.MergeFrom(obj.DeepCopyObject().(ctrlclient.Object))
-	obj.SetOwnerReferences(append(obj.GetOwnerReferences(), ownerRef))
-	if err := client.Patch(ctx, obj, patch); err != nil {
-		panic(err)
+	ownerReferences := resource.GetOwnerReferences()
+	ownerReferences = append(ownerReferences, ownerRef)
+	resource.SetOwnerReferences(ownerReferences)
+
+	_, err = dc.Resource(gvr).Namespace(key.Namespace).Update(ctx, resource, metav1.UpdateOptions{})
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to update resource with owner reference")
 	}
 
-	log.Info("Set cleanup ownerReference", resourceName, key.Name)
+	log.Info().Str(gvr.Resource, key.Name).Msg("Set cleanup ownerReference")
 }
 
 func (c *Cleaner) waitForDeletion(ctx context.Context, dc dynamic.Interface, gvr schema.GroupVersionResource, namespace, name string) error {
 	return wait.PollUntilContextTimeout(ctx, c.deletionInterval, c.deletionTimeout, true, func(context.Context) (bool, error) {
-		_, err := dc.Resource(gvr).Namespace(namespace).Get(context.TODO(), name, metav1.GetOptions{})
+		l := log.Info().
+			Str("gvr", gvr.String()).
+			Str("namespace", namespace).
+			Str("name", name)
+		_, err := dc.Resource(gvr).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			if apierrors.IsNotFound(err) {
+				l.Msg("Resource deleted")
 				return true, nil
 			}
 			return false, err
 		}
+		l.Str("retryInterval", c.deletionInterval.String()).
+			Str("retryTimeout", c.deletionTimeout.String()).
+			Msg("Resource not deleted")
 		return false, nil
 	})
 }
@@ -320,10 +424,10 @@ func (c *Cleaner) startGRPCServer(wg *sync.WaitGroup) {
 		WriteTimeout: 1 * time.Second,
 	}
 	go func() {
-		log.Info("gRPC server starting...", "address", address)
+		log.Info().Str("address", address).Msg("gRPC server starting...")
 		err := server.ListenAndServe()
 		if err != nil {
-			log.Error(err, "gRPC server stopped, unable to handle further FinalizeCleanup requests")
+			log.Error().Err(err).Msg("gRPC server stopped, unable to handle further FinalizeCleanup requests")
 		}
 	}()
 
@@ -334,11 +438,11 @@ func (c *Cleaner) startGRPCServer(wg *sync.WaitGroup) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := server.Shutdown(ctx); err != nil {
-		log.Error(err, "Error while shutting down gRPC server")
+		log.Error().Err(err).Msg("failed to shut down gRPC server")
 		return
 	}
 
-	log.Info("gRPC server gracefully shut down")
+	log.Info().Msg("gRPC server gracefully shut down")
 }
 
 // cleanupServiceServer implements the CleanupService API.
@@ -348,11 +452,11 @@ type cleanupServiceServer struct {
 
 // FinalizeCleanup notifies spectro-cleanup that it can now self destruct.
 func (s *cleanupServiceServer) FinalizeCleanup(ctx context.Context, req *connect.Request[cleanv1.FinalizeCleanupRequest]) (*connect.Response[cleanv1.FinalizeCleanupResponse], error) {
-	log.Info("Received request to FinalizeCleanup")
+	log.Info().Msg("Received request to FinalizeCleanup")
 
 	if *notif == nil {
 		err := ErrIllegalCleanupNotification
-		log.Error(err, "nil notification channel")
+		log.Error().Err(err).Msg("nil notification channel")
 		return connect.NewResponse(&cleanv1.FinalizeCleanupResponse{}), err
 	}
 
