@@ -52,7 +52,7 @@ func TestReadConfig(t *testing.T) {
 			if tt.path == "/tmp/existingfile.json" {
 				tt.path = tmpFile.Name()
 			}
-			output := readConfig(tt.path, FilesToDelete)
+			output := readConfig(tt.path, filesToDelete)
 
 			if string(output) != string(tt.expectedOutput) {
 				t.Errorf("expected output %s, got %s", tt.expectedOutput, output)
