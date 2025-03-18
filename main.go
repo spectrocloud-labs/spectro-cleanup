@@ -280,12 +280,12 @@ func (c *Cleaner) cleanupResources(ctx context.Context, dc dynamic.Interface) {
 			} else {
 				log.Info().
 					Str("maxDelaySeconds", fmt.Sprintf("%.0f", c.cleanupTimeout.Seconds())).
-					Msg("Self destructing...")
+					Msg("Waiting for final cleanup notification or timeout before destructing...")
 				select {
 				case <-*notif:
-					log.Info().Msg("FinalizeCleanup notification received, self destructing")
+					log.Info().Msg("FinalizeCleanup notification received, self destructing...")
 				case <-time.After(c.cleanupTimeout):
-					log.Info().Msg(fmt.Sprintf("%.0f seconds elapsed, self destructing", c.cleanupTimeout.Seconds()))
+					log.Info().Msg(fmt.Sprintf("%.0f seconds elapsed, self destructing...", c.cleanupTimeout.Seconds()))
 				}
 			}
 		}
