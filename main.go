@@ -315,9 +315,18 @@ func (c *Cleaner) cleanupResources(ctx context.Context, dc dynamic.Interface) {
 			}
 			return false
 		}, func() error {
-			return dc.Resource(obj.GroupVersionResource).Namespace(obj.Namespace).Delete(
+			err := dc.Resource(obj.GroupVersionResource).Namespace(obj.Namespace).Delete(
 				ctx, obj.Name, metav1.DeleteOptions{PropagationPolicy: &propagationPolicy},
 			)
+			if err != nil {
+				if apierrors.IsNotFound(err) {
+					log.Warn().Err(err).Msg("resource not found, skipping")
+					return nil
+				}
+				log.Warn().Err(err).Msg("resource deletion failed")
+				return err
+			}
+			return nil
 		})
 		if err != nil {
 			if obj.MustDelete {
