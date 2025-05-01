@@ -2,7 +2,7 @@ module github.com/spectrocloud-labs/spectro-cleanup
 
 go 1.24
 
-toolchain go1.24.1
+toolchain go1.24.2
 
 require (
 	buf.build/gen/go/spectrocloud/spectro-cleanup/connectrpc/go v1.13.0-20231213011348-5645e27c876a.1
