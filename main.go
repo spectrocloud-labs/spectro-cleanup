@@ -296,6 +296,21 @@ func (c *Cleaner) cleanupResources(ctx context.Context, dc dynamic.Interface) {
 			Str("gvr", obj.GroupVersionResource.String()).
 			Msg("Deleting resource")
 
+		deleteResource := func() error {
+			err := dc.Resource(obj.GroupVersionResource).Namespace(obj.Namespace).Delete(
+				ctx, obj.Name, metav1.DeleteOptions{PropagationPolicy: &propagationPolicy},
+			)
+			if err != nil {
+				if apierrors.IsNotFound(err) {
+					log.Warn().Err(err).Msg("resource not found, skipping")
+					return nil
+				}
+				log.Warn().Err(err).Msg("resource deletion failed")
+				return err
+			}
+			return nil
+		}
+
 		// Retry delete operation
 		err := retry.OnError(wait.Backoff{
 			Steps:    5,
@@ -303,22 +318,7 @@ func (c *Cleaner) cleanupResources(ctx context.Context, dc dynamic.Interface) {
 			Factor:   2.0,
 			Jitter:   0.1,
 			Cap:      30 * time.Second,
-		}, func(err error) bool {
-			// Retry on network errors and server errors
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				log.Debug().Str("error", err.Error()).Msg("Network error, retrying...")
-				return true
-			}
-			if strings.Contains(err.Error(), "TLS handshake timeout") {
-				log.Debug().Str("error", err.Error()).Msg("TLS handshake timeout, retrying...")
-				return true
-			}
-			return false
-		}, func() error {
-			return dc.Resource(obj.GroupVersionResource).Namespace(obj.Namespace).Delete(
-				ctx, obj.Name, metav1.DeleteOptions{PropagationPolicy: &propagationPolicy},
-			)
-		})
+		}, retryable, deleteResource)
 		if err != nil {
 			if obj.MustDelete {
 				log.Fatal().Err(err).Msg("resource deletion failed after retries")
@@ -337,6 +337,19 @@ func (c *Cleaner) cleanupResources(ctx context.Context, dc dynamic.Interface) {
 
 	close(*notif)
 	*notif = nil
+}
+
+// retryable returns true to retry deletion requests on network errors and server errors
+func retryable(err error) bool {
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		log.Debug().Str("error", err.Error()).Msg("Network error, retrying...")
+		return true
+	}
+	if strings.Contains(err.Error(), "TLS handshake timeout") {
+		log.Debug().Str("error", err.Error()).Msg("TLS handshake timeout, retrying...")
+		return true
+	}
+	return false
 }
 
 // setOwnerReferences ensures garbage collection of RBAC resources used by cleanup Pod/DaemonSet/Job post self-destruction

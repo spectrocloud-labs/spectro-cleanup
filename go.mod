@@ -1,6 +1,6 @@
 module github.com/spectrocloud-labs/spectro-cleanup
 
-go 1.23.0
+go 1.24
 
 toolchain go1.24.1
 
@@ -10,7 +10,6 @@ require (
 	connectrpc.com/connect v1.13.0
 	github.com/rs/zerolog v1.33.0
 	golang.org/x/net v0.37.0
-	k8s.io/api v0.32.3
 	k8s.io/apimachinery v0.32.3
 	k8s.io/client-go v0.32.3
 )
@@ -43,6 +42,7 @@ require (
 	golang.org/x/time v0.11.0 // indirect
 	google.golang.org/protobuf v1.36.5 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
+	k8s.io/api v0.32.3 // indirect
 	k8s.io/klog/v2 v2.130.1 // indirect
 	k8s.io/kube-openapi v0.0.0-20250318142150-58bc1449e42a // indirect
 	k8s.io/utils v0.0.0-20241210054802-24370beab758 // indirect
