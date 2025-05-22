@@ -100,20 +100,17 @@ type Cleaner struct {
 type DeleteObj struct {
 	schema.GroupVersionResource
 
-	// Name is the name of the resource to be deleted. Omit if DeleteAll is true.
+	// Name is the name of the resource to be deleted. Omit to delete all resources of this GVR.
 	Name string `json:"name,omitempty"`
 
-	// Namespace is the namespace of the resource to be deleted. Omit if DeleteAll is true.
+	// Namespace is the namespace of the resource to be deleted. Omit when deleting all resources for this GVR
+	// or when deleting a single cluster-scoped resource.
 	Namespace string `json:"namespace,omitempty"`
 
 	// MustDelete is a flag that indicates if the resource must be deleted.
 	// If true, the cleanup will fail if the resource(s) are not deleted.
 	// If false, the cleanup will continue even if the resource(s) are not deleted.
 	MustDelete bool `json:"mustDelete,omitempty"`
-
-	// DeleteAll indicates whether to delete all resources of this GVR.
-	// If true, Name and Namespace are ignored and all resources of this GVR will be deleted.
-	DeleteAll bool `json:"deleteAll,omitempty"`
 }
 
 func main() {
@@ -486,8 +483,15 @@ func (c *Cleaner) cleanupResources(ctx context.Context, dc dynamic.Interface) {
 			}
 		}
 
+		if obj.Name == "" && obj.Namespace != "" {
+			log.Fatal().
+				Str("gvr", obj.GroupVersionResource.String()).
+				Str("namespace", obj.Namespace).
+				Msg("namespace specified but name is empty")
+		}
+
 		var err error
-		if obj.DeleteAll {
+		if obj.Name == "" && obj.Namespace == "" {
 			err = c.deleteAllResources(ctx, dc, obj)
 		} else {
 			err = c.deleteSingleResource(ctx, dc, obj)
