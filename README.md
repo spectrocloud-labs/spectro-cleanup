@@ -4,13 +4,17 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/spectrocloud-labs/spectro-cleanup.svg)](https://pkg.go.dev/github.com/spectrocloud-labs/spectro-cleanup)
 
 # spectro-cleanup
+
 A generic cleanup utility for removing arbitrary files from nodes and/or resources from a K8s cluster.
 
 This tool can be deployed as a DaemonSet/Job/Pod. Simply create your config files and apply it on your K8s cluster.
 
 ## Configuration
+
 ### Examples
+
 #### DaemonSet Configuration
+
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -85,13 +89,27 @@ metadata:
     app: {{ template "multus.name" . }}
     {{- include "multus.labels" . | indent 4 }}
 data:
+  # multus files we want to delete
   file-config.json: |-
     [
       "/host/etc/cni/net.d/00-multus.conf",
       "/host/opt/cni/bin/multus"
     ]
+  # Kubernetes resources we want to delete.
+  #
+  # The first entry deletes all secrets in the cluster
+  # to illustrate that name and namespace are optional.
+  # You would likely not want to do that in production :-)
+  #
+  # The last two entries are for cleaning up the spectro-cleanup
+  # configuration and DaemonSet so that no traces are left behind.
   resource-config.json: |-
     [
+      {
+        "group": "",
+        "version": "v1",
+        "resource": "secrets"
+      },
       {
         "group": "",
         "version": "v1",
@@ -174,6 +192,7 @@ spec:
 ```
 
 #### Job Configuration
+
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -318,6 +337,7 @@ When this server is configured, spectro-cleanup will be able to wait for a reque
 In this case, the `--cleanup-timeout-seconds` flag will have the fallback time to self destruct in the case that a request is never made to the `FinalizeCleanup` endpoint.
 
 Below you can see an example of how to configure the gRPC server on your daemonset or job:
+
 ```yaml
 apiVersion: batch/v1
 kind: Job
