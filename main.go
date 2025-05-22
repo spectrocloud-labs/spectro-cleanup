@@ -40,6 +40,7 @@ import (
 	"golang.org/x/net/http2/h2c"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -99,16 +100,20 @@ type Cleaner struct {
 type DeleteObj struct {
 	schema.GroupVersionResource
 
-	// Name is the name of the resource to be deleted.
-	Name string `json:"name"`
+	// Name is the name of the resource to be deleted. Omit if DeleteAll is true.
+	Name string `json:"name,omitempty"`
 
-	// Namespace is the namespace of the resource to be deleted.
-	Namespace string `json:"namespace"`
+	// Namespace is the namespace of the resource to be deleted. Omit if DeleteAll is true.
+	Namespace string `json:"namespace,omitempty"`
 
 	// MustDelete is a flag that indicates if the resource must be deleted.
-	// If true, the cleanup will fail if the resource is not deleted.
-	// If false, the cleanup will continue even if the resource is not deleted.
-	MustDelete bool `json:"mustDelete"`
+	// If true, the cleanup will fail if the resource(s) are not deleted.
+	// If false, the cleanup will continue even if the resource(s) are not deleted.
+	MustDelete bool `json:"mustDelete,omitempty"`
+
+	// DeleteAll indicates whether to delete all resources of this GVR.
+	// If true, Name and Namespace are ignored and all resources of this GVR will be deleted.
+	DeleteAll bool `json:"deleteAll,omitempty"`
 }
 
 func main() {
@@ -257,6 +262,176 @@ func (c *Cleaner) cleanupFiles() {
 	}
 }
 
+// deleteResource attempts to delete a single resource with retries
+func (c *Cleaner) deleteResource(ctx context.Context, dc dynamic.Interface, obj DeleteObj, name, namespace string, waitForDeletion bool) error {
+	deleteResource := func() error {
+		err := dc.Resource(obj.GroupVersionResource).Namespace(namespace).Delete(
+			ctx, name, metav1.DeleteOptions{PropagationPolicy: &propagationPolicy},
+		)
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				log.Warn().Err(err).Msg("resource not found, skipping")
+				return nil
+			}
+			log.Warn().Err(err).Msg("resource deletion failed")
+			return err
+		}
+		return nil
+	}
+
+	// Retry delete operation
+	err := retry.OnError(wait.Backoff{
+		Steps:    5,
+		Duration: 1 * time.Second,
+		Factor:   2.0,
+		Jitter:   0.1,
+		Cap:      30 * time.Second,
+	}, retryable, deleteResource)
+	if err != nil {
+		if obj.MustDelete {
+			log.Fatal().Err(err).Msg("resource deletion failed after retries")
+		}
+		log.Warn().Err(err).Msg("resource deletion failed after retries")
+	}
+
+	// Deletion has been initiated. If waitForDeletion is true, wait for the resource to be deleted.
+	if waitForDeletion {
+		if err := c.waitForDeletion(ctx, dc, obj.GroupVersionResource, namespace, name); err != nil {
+			log.Error().Err(err).Msg("failed to verify resource deletion")
+			return err
+		}
+	}
+
+	return nil
+}
+
+// deleteSingleResource handles deletion of a single resource
+func (c *Cleaner) deleteSingleResource(ctx context.Context, dc dynamic.Interface, obj DeleteObj) error {
+	log.Info().
+		Str("name", obj.Name).
+		Str("namespace", obj.Namespace).
+		Str("gvr", obj.GroupVersionResource.String()).
+		Msg("Deleting resource")
+
+	return c.deleteResource(ctx, dc, obj, obj.Name, obj.Namespace, c.blockingDeletion)
+}
+
+// deleteAllResources handles deletion of all resources of a given GVR
+func (c *Cleaner) deleteAllResources(ctx context.Context, dc dynamic.Interface, obj DeleteObj) error {
+	log.Info().
+		Str("gvr", obj.GroupVersionResource.String()).
+		Msg("Deleting all resources of type")
+
+	list, err := dc.Resource(obj.GroupVersionResource).Namespace(obj.Namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		log.Error().Err(err).Msg("failed to list resources")
+		return err
+	}
+
+	// If blockingDeletion is true, use a wait group to parallelize deletion and waiting
+	if c.blockingDeletion {
+		var wg sync.WaitGroup
+		errChan := make(chan error, len(list.Items))
+
+		// First, initiate all deletions in parallel
+		for _, item := range list.Items {
+			wg.Add(1)
+			go func(item *unstructured.Unstructured) {
+				defer wg.Done()
+
+				name := item.GetName()
+				namespace := item.GetNamespace()
+				if namespace == "" {
+					namespace = obj.Namespace
+				}
+
+				log.Info().
+					Str("name", name).
+					Str("namespace", namespace).
+					Str("gvr", obj.GroupVersionResource.String()).
+					Msg("Deleting resource")
+
+				// Don't wait for deletion here
+				if err := c.deleteResource(ctx, dc, obj, name, namespace, false); err != nil {
+					if obj.MustDelete {
+						errChan <- fmt.Errorf("resource %s deletion failed: %w", name, err)
+					}
+				}
+			}(&item)
+		}
+
+		// Wait for all deletions to be initiated
+		wg.Wait()
+		close(errChan)
+
+		// Check if any errors occurred during deletion
+		for err := range errChan {
+			if obj.MustDelete {
+				return err
+			}
+			log.Error().Err(err).Msg("resource deletion failed")
+		}
+
+		// Now wait for all resources to be deleted in parallel
+		wg = sync.WaitGroup{}
+		errChan = make(chan error, len(list.Items))
+
+		for _, item := range list.Items {
+			wg.Add(1)
+			go func(item *unstructured.Unstructured) {
+				defer wg.Done()
+
+				name := item.GetName()
+				namespace := item.GetNamespace()
+				if namespace == "" {
+					namespace = obj.Namespace
+				}
+
+				if err := c.waitForDeletion(ctx, dc, obj.GroupVersionResource, namespace, name); err != nil {
+					if obj.MustDelete {
+						errChan <- fmt.Errorf("failed to verify resource %s deletion: %w", name, err)
+					}
+					log.Error().Err(err).Msg("failed to verify resource deletion")
+				}
+			}(&item)
+		}
+
+		// Wait for all verifications to complete
+		wg.Wait()
+		close(errChan)
+
+		// Check if any errors occurred during verification
+		for err := range errChan {
+			if obj.MustDelete {
+				return err
+			}
+			log.Error().Err(err).Msg("resource deletion verification failed")
+		}
+	} else {
+		// Non-blocking deletion - process resources sequentially
+		for _, item := range list.Items {
+			name := item.GetName()
+			namespace := item.GetNamespace()
+			if namespace == "" {
+				namespace = obj.Namespace
+			}
+
+			log.Info().
+				Str("name", name).
+				Str("namespace", namespace).
+				Str("gvr", obj.GroupVersionResource.String()).
+				Msg("Deleting resource")
+
+			err := c.deleteResource(ctx, dc, obj, name, namespace, false)
+			if err != nil && obj.MustDelete {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
 // cleanupResources deletes all K8s resources specified in the resource cleanup config file
 func (c *Cleaner) cleanupResources(ctx context.Context, dc dynamic.Interface) {
 	resources := []DeleteObj{}
@@ -290,48 +465,17 @@ func (c *Cleaner) cleanupResources(ctx context.Context, dc dynamic.Interface) {
 			}
 		}
 
-		log.Info().
-			Str("name", obj.Name).
-			Str("namespace", obj.Namespace).
-			Str("gvr", obj.GroupVersionResource.String()).
-			Msg("Deleting resource")
-
-		deleteResource := func() error {
-			err := dc.Resource(obj.GroupVersionResource).Namespace(obj.Namespace).Delete(
-				ctx, obj.Name, metav1.DeleteOptions{PropagationPolicy: &propagationPolicy},
-			)
-			if err != nil {
-				if apierrors.IsNotFound(err) {
-					log.Warn().Err(err).Msg("resource not found, skipping")
-					return nil
-				}
-				log.Warn().Err(err).Msg("resource deletion failed")
-				return err
-			}
-			return nil
+		var err error
+		if obj.DeleteAll {
+			err = c.deleteAllResources(ctx, dc, obj)
+		} else {
+			err = c.deleteSingleResource(ctx, dc, obj)
 		}
-
-		// Retry delete operation
-		err := retry.OnError(wait.Backoff{
-			Steps:    5,
-			Duration: 1 * time.Second,
-			Factor:   2.0,
-			Jitter:   0.1,
-			Cap:      30 * time.Second,
-		}, retryable, deleteResource)
-		if err != nil {
-			if obj.MustDelete {
-				log.Fatal().Err(err).Msg("resource deletion failed after retries")
-			}
-			log.Warn().Err(err).Msg("resource deletion failed after retries")
-		}
-
-		// Deletion has been initiated. If blockingDeletion is true, wait for the resource to be deleted.
-		if c.blockingDeletion {
-			if err := c.waitForDeletion(ctx, dc, obj.GroupVersionResource, obj.Namespace, obj.Name); err != nil {
-				log.Error().Err(err).Msg("failed to verify resource deletion")
-				continue
-			}
+		if err != nil && obj.MustDelete {
+			log.Fatal().
+				Err(err).
+				Str("gvr", obj.GroupVersionResource.String()).
+				Msg("resource deletion failed")
 		}
 	}
 
