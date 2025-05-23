@@ -67,6 +67,7 @@ var (
 	clusterRoleBindingGVR = schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterrolebindings"}
 	roleGVR               = schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "roles"}
 	roleBindingGVR        = schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "rolebindings"}
+	namespaceGVR          = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "namespaces"}
 	serviceAccountGVR     = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "serviceaccounts"}
 )
 
@@ -104,7 +105,7 @@ type DeleteObj struct {
 	Name string `json:"name,omitempty"`
 
 	// Namespace is the namespace of the resource to be deleted. Omit when deleting all resources for this GVR
-	// or when deleting a single cluster-scoped resource.
+	// across all namespaces, or when deleting a single cluster-scoped resource.
 	Namespace string `json:"namespace,omitempty"`
 
 	// MustDelete is a flag that indicates if the resource must be deleted.
@@ -313,22 +314,50 @@ func (c *Cleaner) deleteSingleResource(ctx context.Context, dc dynamic.Interface
 	return c.deleteResource(ctx, dc, obj, obj.Name, obj.Namespace, c.blockingDeletion)
 }
 
-// deleteAllResources handles deletion of all resources of a given GVR
+// deleteAllResources handles deletion of all resources of a given GVR.
+// If a namespace is specified, only resources in that namespace will be deleted.
+// If a namespace is not specified, all resources in all namespaces will be deleted.
 func (c *Cleaner) deleteAllResources(ctx context.Context, dc dynamic.Interface, obj DeleteObj) error {
 	log.Info().
 		Str("gvr", obj.GroupVersionResource.String()).
-		Msg("Deleting all resources of type")
+		Str("namespace", obj.Namespace).
+		Msg("deleting all resources of type")
 
-	list, err := dc.Resource(obj.GroupVersionResource).Namespace(obj.Namespace).List(ctx, metav1.ListOptions{})
+	resources := unstructured.UnstructuredList{}
+
+	namespaces, err := dc.Resource(namespaceGVR).List(ctx, metav1.ListOptions{})
 	if err != nil {
-		log.Error().Err(err).Msg("failed to list resources")
+		log.Error().Err(err).Msg("failed to list namespaces")
 		return err
+	}
+	for _, namespace := range namespaces.Items {
+		ns := namespace.GetName()
+		if obj.Namespace != "" && obj.Namespace != ns {
+			log.Info().
+				Str("gvr", obj.GroupVersionResource.String()).
+				Str("namespace", ns).
+				Msg("skipping namespace")
+			continue
+		}
+		list, err := dc.Resource(obj.GroupVersionResource).Namespace(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			log.Error().Err(err).Msg("failed to list resources")
+			return err
+		}
+		resources.Items = append(resources.Items, list.Items...)
+	}
+	if len(resources.Items) == 0 {
+		log.Info().
+			Str("gvr", obj.GroupVersionResource.String()).
+			Str("namespace", obj.Namespace).
+			Msg("no resources found")
+		return nil
 	}
 
 	if c.blockingDeletion {
-		return c.deleteAllResourcesBlocking(ctx, dc, obj, list.Items)
+		return c.deleteAllResourcesBlocking(ctx, dc, obj, resources.Items)
 	}
-	return c.deleteAllResourcesNonBlocking(ctx, dc, obj, list.Items)
+	return c.deleteAllResourcesNonBlocking(ctx, dc, obj, resources.Items)
 }
 
 // deleteAllResourcesBlocking handles deletion of all resources with blocking behavior
@@ -483,17 +512,15 @@ func (c *Cleaner) cleanupResources(ctx context.Context, dc dynamic.Interface) {
 			}
 		}
 
-		if obj.Name == "" && obj.Namespace != "" {
-			log.Fatal().
-				Str("gvr", obj.GroupVersionResource.String()).
-				Str("namespace", obj.Namespace).
-				Msg("namespace specified but name is empty")
-		}
-
 		var err error
-		if obj.Name == "" && obj.Namespace == "" {
+		if obj.Name == "" {
 			err = c.deleteAllResources(ctx, dc, obj)
 		} else {
+			log.Info().
+				Str("gvr", obj.GroupVersionResource.String()).
+				Str("name", obj.Name).
+				Str("namespace", obj.Namespace).
+				Msg("deleting resource")
 			err = c.deleteSingleResource(ctx, dc, obj)
 		}
 		if err != nil && obj.MustDelete {
