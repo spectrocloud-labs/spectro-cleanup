@@ -72,7 +72,7 @@ func main() {
 	flag.StringVar(&c.SAName, "sa-name", c.SAName, "ServiceAccount name for cleanup Pod/DaemonSet/Job")
 	flag.StringVar(&c.RoleName, "role-name", c.RoleName, "Role name for cleanup Pod/DaemonSet/Job")
 	flag.StringVar(&c.RoleBindingName, "role-binding-name", c.RoleBindingName, "RoleBinding name for cleanup Pod/DaemonSet/Job")
-	flag.StringVar(&c.ClusterRoleName, "cluster-role-name", c.ClusterRoleName, "ClusterRole name for cleanup Pod/DaemonSet/Job. If set, role-name will be ignored.")
+	flag.StringVar(&c.ClusterRoleName, "cluster-role-name", c.RoleName, "ClusterRole name for cleanup Pod/DaemonSet/Job. If set, role-name will be ignored.")
 	flag.StringVar(&c.ClusterRoleBindingName, "cluster-role-binding-name", c.RoleBindingName, "ClusterRoleBinding name for cleanup Pod/DaemonSet/Job. If set, role-binding-name will be ignored.")
 
 	flag.BoolVar(&c.Debug, "debug", c.Debug, "Enable debug logging")
