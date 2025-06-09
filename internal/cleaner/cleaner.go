@@ -303,11 +303,11 @@ func (c *Cleaner) deleteAllResources(ctx context.Context, dc dynamic.Interface, 
 		resources.Items = append(resources.Items, list.Items...)
 	}
 	if len(resources.Items) == 0 {
-		log.Error().
+		log.Warn().
 			Str("gvr", obj.GroupVersionResource.String()).
 			Str("namespace", obj.Namespace).
-			Msg("no resources found")
-		return fmt.Errorf("no resources found for GVR '%s' in namespace '%s'", obj.GroupVersionResource.String(), obj.Namespace)
+			Msg("no resources found, skipping")
+		return nil
 	}
 
 	if c.BlockingDeletion {
