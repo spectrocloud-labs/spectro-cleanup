@@ -8,14 +8,13 @@ CLEANUP_IMG ?= "gcr.io/spectro-common-dev/${USER}/spectro-cleanup:latest"
 
 # binary versions
 BIN_DIR ?= ./bin
-FIPS_ENABLE ?= ""
 BUILDER_GOLANG_VERSION ?= 1.24
 GOLANGCI_VERSION ?= 1.64.8
 
 GOOS ?= $(shell go env GOOS)
 GOARCH ?= $(shell go env GOARCH)
 
-BUILD_ARGS = --build-arg CRYPTO_LIB=${FIPS_ENABLE} --build-arg BUILDER_GOLANG_VERSION=${BUILDER_GOLANG_VERSION}
+BUILD_ARGS = --build-arg BUILDER_GOLANG_VERSION=${BUILDER_GOLANG_VERSION}
 
 ##@ Help Targets
 help:  ## Display this help
