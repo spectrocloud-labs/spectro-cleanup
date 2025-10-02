@@ -1,46 +1,42 @@
-## golangci-lint v1.55.2
-
-# References:
-# - https://golangci-lint.run/usage/linters/
-# - https://gist.github.com/maratori/47a4d00457a92aa426dbd48a18776322
-
+version: "2"
 run:
-  go: "1.24"
-  timeout: 10m # default 1m
-
-linters-settings:
-  cyclop:
-    max-complexity: 18 # maximal code complexity to report; default 10
-    package-average: 16.0 # maximal average package complexity to report; default 0.0
-  gocognit:
-    min-complexity: 30 # minimal code complexity to report; default: 30
-  govet:
-    enable-all: true
-    disable:
-      - fieldalignment # too strict
-      - shadow # too strict
-
+  allow-parallel-runners: true
 linters:
-  disable-all: true
+  default: none
   enable:
-    - errcheck # Errcheck is a program for checking for unchecked errors in go programs. These unchecked errors can be critical bugs in some cases
-    - ineffassign # Detects when assignments to existing variables are not used
-    - typecheck # Like the front-end of a Go compiler, parses and type-checks Go code
-    - gosimple # Linter for Go source code that specializes in simplifying a code
-    - govet # Vet examines Go source code and reports suspicious constructs, such as Printf calls whose arguments do not align with the format string
-    - unused # Checks Go code for unused constants, variables, functions and types
-    - staticcheck # Staticcheck is a go vet on steroids, applying a ton of static analysis checks
-    - cyclop # checks function and package cyclomatic complexity
-    - gocognit # Computes and checks the cognitive complexity of functions
-
-issues:
-  max-issues-per-linter: 0
-  max-same-issues: 0
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - errcheck
-        - gosimple
-        - ineffassign
-        - staticcheck
-        - unused
+  - copyloopvar
+  - dupl
+  - errcheck
+  - ginkgolinter
+  - goconst
+  - gocyclo
+  - govet
+  - ineffassign
+  - misspell
+  - nakedret
+  - prealloc
+  - revive
+  - staticcheck
+  - unconvert
+  - unparam
+  - unused
+  exclusions:
+    generated: lax
+    paths:
+      - .*_test\.go
+  # Ref: https://golangci-lint.run/docs/linters/configuration
+  settings:
+    cyclop:
+      max-complexity: 18 # maximal code complexity to report; default 10
+      package-average: 16.0 # maximal average package complexity to report; default 0.0
+    gocognit:
+      min-complexity: 30 # minimal code complexity to report; default: 30
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment # too strict
+        - shadow # too strict
+formatters:
+  enable:
+  - gofmt
+  - goimports
