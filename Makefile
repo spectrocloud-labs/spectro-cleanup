@@ -15,6 +15,7 @@ GOOS ?= $(shell go env GOOS)
 GOARCH ?= $(shell go env GOARCH)
 
 BUILD_ARGS = --build-arg BUILDER_GOLANG_VERSION=${BUILDER_GOLANG_VERSION}
+TARGETPLATFORM ?= $(GOOS)/$(GOARCH)
 
 ##@ Help Targets
 help:  ## Display this help
@@ -42,7 +43,7 @@ vet: ## Run go vet against code
 ##@ Image Targets
 docker: docker-build-cleanup docker-push ## Tags docker image and also pushes it to container registry
 docker-build-cleanup: ## Builds docker image for Spectro Cleanup
-	docker build . -t ${CLEANUP_IMG} ${BUILD_ARGS} -f ./Dockerfile
+	docker build --platform=${TARGETPLATFORM} . -t ${CLEANUP_IMG} ${BUILD_ARGS} -f ./Dockerfile
 docker-push: ## Pushes docker images to container registry
 	docker push ${CLEANUP_IMG}
 docker-rmi: ## Remove the local docker images
