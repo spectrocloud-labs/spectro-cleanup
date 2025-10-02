@@ -12,6 +12,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package cleaner provides utilities for cleaning up Kubernetes resources and files.
 package cleaner
 
 import (
@@ -55,6 +56,7 @@ var (
 	notif             = new(chan bool)
 	propagationPolicy = metav1.DeletePropagationBackground
 
+	// ErrIllegalCleanupNotification is returned when cleanup is notified before resources are cleaned.
 	ErrIllegalCleanupNotification = errors.New("illegally notified cleanup prior to cleanup resources call")
 
 	clusterRoleGVR        = schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterroles"}
@@ -576,7 +578,7 @@ type cleanupServiceServer struct {
 }
 
 // FinalizeCleanup notifies spectro-cleanup that it can now self destruct.
-func (s *cleanupServiceServer) FinalizeCleanup(ctx context.Context, req *connect.Request[cleanv1.FinalizeCleanupRequest]) (*connect.Response[cleanv1.FinalizeCleanupResponse], error) {
+func (s *cleanupServiceServer) FinalizeCleanup(_ context.Context, _ *connect.Request[cleanv1.FinalizeCleanupRequest]) (*connect.Response[cleanv1.FinalizeCleanupResponse], error) {
 	log.Info().Msg("Received request to FinalizeCleanup")
 
 	if *notif == nil {

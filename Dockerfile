@@ -1,8 +1,12 @@
 ARG BUILDER_GOLANG_VERSION
-# Build the spectro cleanup binary
-FROM --platform=linux/amd64 gcr.io/spectro-images-public/golang:${BUILDER_GOLANG_VERSION}-alpine AS builder
-ARG CRYPTO_LIB
-ENV GOEXPERIMENT=${CRYPTO_LIB:+boringcrypto}
+FROM --platform=linux/amd64 gcr.io/spectro-images-public/golang:${BUILDER_GOLANG_VERSION}-alpine AS scanner
+
+FROM --platform=linux/amd64 golang:1.25.1-alpine3.22@sha256:b6ed3fd0452c0e9bcdef5597f29cc1418f61672e9d3a2f55bf02e7222c014abd AS builder
+
+COPY --from=scanner /usr/local/bin/scan-govulncheck.sh /usr/local/bin/scan-govulncheck.sh
+
+RUN apk add --no-cache bash
+RUN go install golang.org/x/vuln/cmd/govulncheck@latest
 
 WORKDIR /workspace
 
@@ -14,17 +18,11 @@ RUN go mod download
 # Copy the go source
 COPY . .
 
-# Build
-RUN if [ ${CRYPTO_LIB} ]; \
-    then \
-      go-build-fips.sh -a -o cleanup main.go ;\
-    else \
-      go-build-static.sh -a -o cleanup main.go ;\
-    fi
-RUN if [ "${CRYPTO_LIB}" ]; then assert-static.sh atop; fi
-RUN if [ "${CRYPTO_LIB}" ]; then assert-fips.sh atop; fi
+# Build and scan
+RUN CGO_ENABLED=0 GOFIPS140=v1.0.0 go build -a -o cleanup -v main.go
+
 # Scan
-RUN scan-govulncheck.sh cleanup
+RUN bash /usr/local/bin/scan-govulncheck.sh cleanup
 
 # Finalize
 FROM gcr.io/distroless/static:latest AS cleanup
