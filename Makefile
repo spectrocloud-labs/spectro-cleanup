@@ -3,9 +3,6 @@
 
 .DEFAULT_GOAL:=help
 
-# Image URL to use all building/pushing image targets
-CLEANUP_IMG ?= "gcr.io/spectro-common-dev/${USER}/spectro-cleanup:latest"
-
 # binary versions
 BIN_DIR ?= ./bin
 BUILDER_GOLANG_VERSION ?= 1.24
@@ -14,8 +11,12 @@ GOLANGCI_VERSION ?= 2.5.0
 GOOS ?= $(shell go env GOOS)
 GOARCH ?= $(shell go env GOARCH)
 
-BUILD_ARGS = --build-arg BUILDER_GOLANG_VERSION=${BUILDER_GOLANG_VERSION}
-TARGETPLATFORM ?= $(GOOS)/$(GOARCH)
+# image parameters
+BUILD_ARGS = --build-arg BUILDER_GOLANG_VERSION=$(BUILDER_GOLANG_VERSION)
+PLATFORMS ?= linux/amd64,linux/arm64
+VERSION ?= "latest"
+REGISTRY ?= "quay.io/spectrocloud-labs"
+CLEANUP_IMG ?= "$(REGISTRY)/spectro-cleanup:$(VERSION)"
 
 ##@ Help Targets
 help:  ## Display this help
@@ -41,13 +42,12 @@ vet: ## Run go vet against code
 	go vet ./...
 
 ##@ Image Targets
-docker: docker-build-cleanup docker-push ## Tags docker image and also pushes it to container registry
-docker-build-cleanup: ## Builds docker image for Spectro Cleanup
-	docker build --platform=${TARGETPLATFORM} . -t ${CLEANUP_IMG} ${BUILD_ARGS} -f ./Dockerfile
-docker-push: ## Pushes docker images to container registry
-	docker push ${CLEANUP_IMG}
+docker: ## Builds and pushes multi-arch docker image
+	docker buildx create --name multiarch --use || true
+	docker buildx build --platform $(PLATFORMS) $(BUILD_ARGS) -t $(CLEANUP_IMG) --push -f ./Dockerfile .
+	docker buildx rm multiarch
 docker-rmi: ## Remove the local docker images
-	docker rmi ${CLEANUP_IMG}
+	docker rmi $(CLEANUP_IMG)
 
 ## Tools & binaries
 golangci-lint:
