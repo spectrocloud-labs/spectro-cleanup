@@ -5,7 +5,8 @@
 
 # binary versions
 BIN_DIR ?= ./bin
-BUILDER_GOLANG_VERSION ?= 1.24
+BUILDER_GOLANG_VERSION ?= 1.25
+FIPS_MODULE ?= boringcrypto
 GOLANGCI_VERSION ?= 2.5.0
 
 GOOS ?= $(shell go env GOOS)

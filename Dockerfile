@@ -1,31 +1,44 @@
 ARG BUILDER_GOLANG_VERSION
-FROM --platform=$BUILDPLATFORM gcr.io/spectro-images-public/golang:${BUILDER_GOLANG_VERSION}-alpine AS scanner
+ARG FIPS_MODULE
 
-FROM --platform=$BUILDPLATFORM golang:1.25.1-alpine3.22@sha256:b6ed3fd0452c0e9bcdef5597f29cc1418f61672e9d3a2f55bf02e7222c014abd AS builder
+FROM --platform=$BUILDPLATFORM tonistiigi/xx AS xx
 
+FROM --platform=$BUILDPLATFORM us-docker.pkg.dev/palette-images/build-base-images/golang:${BUILDER_GOLANG_VERSION:-1.25}-alpine AS builder
 ARG TARGETOS
 ARG TARGETARCH
+ARG FIPS_MODULE
 
-COPY --from=scanner /usr/local/bin/scan-govulncheck.sh /usr/local/bin/scan-govulncheck.sh
+COPY --from=xx / /
 
-RUN apk add --no-cache bash
-RUN go install golang.org/x/vuln/cmd/govulncheck@latest
+LABEL org.opencontainers.image.source="https://github.com/spectrocloud-labs/spectro-cleanup"
 
 WORKDIR /workspace
 
-# Copy the go module manifests & download dependencies
-COPY go.mod go.mod
-COPY go.sum go.sum
-RUN go mod download
+# Install git for go mod download and clang for xx
+RUN apk add --no-cache git clang
 
-# Copy the go source
+# Install cross-compilation toolchain using xx
+RUN xx-apk add --no-cache musl-dev gcc
+
 COPY . .
 
-# Build and scan
-RUN CGO_ENABLED=0 GOFIPS140=v1.0.0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -a -o cleanup -v main.go
-
-# Scan
-RUN bash /usr/local/bin/scan-govulncheck.sh cleanup
+# Build
+RUN export GOOS=${TARGETOS} && \
+    export GOARCH=${TARGETARCH} && \
+    export TARGETPLATFORM=${TARGETOS}/${TARGETARCH} && \
+    export CC=$(xx-clang --print-target-triple)-clang && \
+    export CXX=$(xx-clang --print-target-triple)-clang++ && \
+    if [ "${FIPS_MODULE}" = "boringcrypto" ]; then \
+        go-build-fips.sh -a -o cleanup; \
+        go tool nm cleanup | grep FIPS; \
+        assert-fips.sh cleanup; \
+    elif [ "${FIPS_MODULE}" = "go" ]; then \
+        GOFIPS140=v1.0.0 xx-go build -a -o cleanup; \
+    else \
+        go-build-static.sh -a -o cleanup; \
+        assert-static.sh cleanup; \
+    fi; \
+    scan-govulncheck.sh cleanup
 
 # Finalize
 FROM gcr.io/distroless/static:latest AS cleanup
