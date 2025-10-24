@@ -282,7 +282,7 @@ func (c *Cleaner) deleteAllResources(ctx context.Context, dc dynamic.Interface, 
 		Str("namespace", obj.Namespace).
 		Msg("deleting all resources of type")
 
-	isClusterScoped, err := isResourceClusterScoped(rm, obj.GroupVersionResource)
+	clusterScoped, err := isResourceClusterScoped(rm, obj.GroupVersionResource)
 	if err != nil {
 		log.Error().Err(err).Msg("failed to determine resource scope")
 		return err
@@ -290,7 +290,7 @@ func (c *Cleaner) deleteAllResources(ctx context.Context, dc dynamic.Interface, 
 
 	var resources unstructured.UnstructuredList
 
-	switch isClusterScoped {
+	switch clusterScoped {
 	case true:
 		// For cluster-scoped resources, list at cluster level
 		list, err := dc.Resource(obj.GroupVersionResource).List(ctx, metav1.ListOptions{})
