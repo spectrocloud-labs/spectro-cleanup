@@ -38,6 +38,7 @@ import (
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -75,7 +76,7 @@ type DeleteObj struct {
 	Name string `json:"name,omitempty"`
 
 	// Namespace is the namespace of the resource to be deleted. Omit when deleting all resources for this GVR
-	// across all namespaces, or when deleting a single cluster-scoped resource.
+	// across all namespaces, or when deleting one or all of a cluster-scoped resources.
 	Namespace string `json:"namespace,omitempty"`
 
 	// MustDelete is a flag that indicates if the resource must be deleted.
@@ -154,7 +155,7 @@ func (c *Cleaner) CleanupFiles() error {
 }
 
 // CleanupResources deletes all K8s resources specified in the resource cleanup config file.
-func (c *Cleaner) CleanupResources(ctx context.Context, dc dynamic.Interface) error {
+func (c *Cleaner) CleanupResources(ctx context.Context, dc dynamic.Interface, rm meta.RESTMapper) error {
 	resources := []DeleteObj{}
 	bytes, err := readConfig(c.ResourceConfigPath, resourcesToDelete)
 	if err != nil {
@@ -194,7 +195,7 @@ func (c *Cleaner) CleanupResources(ctx context.Context, dc dynamic.Interface) er
 
 		var err error
 		if obj.Name == "" {
-			err = c.deleteAllResources(ctx, dc, obj)
+			err = c.deleteAllResources(ctx, dc, rm, obj)
 		} else {
 			log.Info().
 				Str("gvr", obj.GroupVersionResource.String()).
@@ -274,36 +275,60 @@ func (c *Cleaner) deleteSingleResource(ctx context.Context, dc dynamic.Interface
 
 // deleteAllResources handles deletion of all resources of a given GVR.
 // If a namespace is specified, only resources in that namespace will be deleted.
-// If a namespace is not specified, all resources in all namespaces will be deleted.
-func (c *Cleaner) deleteAllResources(ctx context.Context, dc dynamic.Interface, obj DeleteObj) error {
+// If a namespace is not specified, all resources will be deleted.
+func (c *Cleaner) deleteAllResources(ctx context.Context, dc dynamic.Interface, rm meta.RESTMapper, obj DeleteObj) error {
 	log.Info().
 		Str("gvr", obj.GroupVersionResource.String()).
 		Str("namespace", obj.Namespace).
 		Msg("deleting all resources of type")
 
-	resources := unstructured.UnstructuredList{}
-
-	namespaces, err := dc.Resource(namespaceGVR).List(ctx, metav1.ListOptions{})
+	// Determine if this is a cluster-scoped or namespaced resource
+	// by attempting to list at cluster level
+	isClusterScoped, err := isResourceClusterScoped(rm, obj.GroupVersionResource)
 	if err != nil {
-		log.Error().Err(err).Msg("failed to list namespaces")
+		log.Error().Err(err).Msg("failed to determine resource scope")
 		return err
 	}
-	for _, namespace := range namespaces.Items {
-		ns := namespace.GetName()
-		if obj.Namespace != "" && obj.Namespace != ns {
-			log.Info().
-				Str("gvr", obj.GroupVersionResource.String()).
-				Str("namespace", ns).
-				Msg("skipping namespace")
-			continue
-		}
-		list, err := dc.Resource(obj.GroupVersionResource).Namespace(ns).List(ctx, metav1.ListOptions{})
+
+	var resources unstructured.UnstructuredList
+
+	switch isClusterScoped {
+	case true:
+		// For cluster-scoped resources, list at cluster level
+		list, err := dc.Resource(obj.GroupVersionResource).List(ctx, metav1.ListOptions{})
 		if err != nil {
-			log.Error().Err(err).Msg("failed to list resources")
+			log.Error().Err(err).Msg("failed to list cluster-scoped resources")
 			return err
 		}
-		resources.Items = append(resources.Items, list.Items...)
+		resources.Items = list.Items
+		log.Info().
+			Str("gvr", obj.GroupVersionResource.String()).
+			Int("count", len(resources.Items)).
+			Msg("found cluster-scoped resources")
+	case false:
+		namespaces, err := dc.Resource(namespaceGVR).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			log.Error().Err(err).Msg("failed to list namespaces")
+			return err
+		}
+		for _, namespace := range namespaces.Items {
+			ns := namespace.GetName()
+			if obj.Namespace != "" && obj.Namespace != ns {
+				log.Info().
+					Str("gvr", obj.GroupVersionResource.String()).
+					Str("namespace", ns).
+					Msg("skipping namespace")
+				continue
+			}
+			list, err := dc.Resource(obj.GroupVersionResource).Namespace(ns).List(ctx, metav1.ListOptions{})
+			if err != nil {
+				log.Error().Err(err).Msg("failed to list resources")
+				return err
+			}
+			resources.Items = append(resources.Items, list.Items...)
+		}
 	}
+
 	if len(resources.Items) == 0 {
 		log.Warn().
 			Str("gvr", obj.GroupVersionResource.String()).
@@ -316,6 +341,21 @@ func (c *Cleaner) deleteAllResources(ctx context.Context, dc dynamic.Interface, 
 		return c.deleteAllResourcesBlocking(ctx, dc, obj, resources.Items)
 	}
 	return c.deleteAllResourcesNonBlocking(ctx, dc, obj, resources.Items)
+}
+
+// isResourceClusterScoped determines if a resource is cluster-scoped or namespaced
+func isResourceClusterScoped(rm meta.RESTMapper, gvr schema.GroupVersionResource) (bool, error) {
+	// Resolve GVR -> GVK, then get a RESTMapping (which includes Scope)
+	gvk, err := rm.KindFor(gvr)
+	if err != nil {
+		return false, err
+	}
+	mapping, err := rm.RESTMapping(gvk.GroupKind(), gvk.Version)
+	if err != nil {
+		return false, err
+	}
+
+	return mapping.Scope.Name() != meta.RESTScopeNameNamespace, nil
 }
 
 // deleteAllResourcesBlocking handles deletion of all resources with blocking behavior

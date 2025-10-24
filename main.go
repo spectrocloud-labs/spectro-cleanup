@@ -26,9 +26,12 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/discovery"
+	memory "k8s.io/client-go/discovery/cached"
 	"k8s.io/client-go/dynamic"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/restmapper"
 
 	"github.com/spectrocloud-labs/spectro-cleanup/internal/cleaner"
 )
@@ -127,6 +130,12 @@ func main() {
 		log.Fatal().Err(err).Msg("failed to create dynamic client")
 	}
 
+	discoveryC, err := discovery.NewDiscoveryClientForConfig(config)
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to create discovery client")
+	}
+	rm := restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(discoveryC))
+
 	if err := c.CleanupFiles(); err != nil {
 		log.Fatal().Err(err).Msg("failed to cleanup files")
 	}
@@ -134,7 +143,7 @@ func main() {
 		Str("duration", time.Since(startTime).String()).
 		Msg("File cleanup complete")
 
-	if err := c.CleanupResources(ctx, dc); err != nil {
+	if err := c.CleanupResources(ctx, dc, rm); err != nil {
 		log.Fatal().Err(err).Msg("failed to cleanup resources")
 	}
 	log.Info().
