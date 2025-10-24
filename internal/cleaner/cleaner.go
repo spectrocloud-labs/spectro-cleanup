@@ -282,8 +282,6 @@ func (c *Cleaner) deleteAllResources(ctx context.Context, dc dynamic.Interface, 
 		Str("namespace", obj.Namespace).
 		Msg("deleting all resources of type")
 
-	// Determine if this is a cluster-scoped or namespaced resource
-	// by attempting to list at cluster level
 	isClusterScoped, err := isResourceClusterScoped(rm, obj.GroupVersionResource)
 	if err != nil {
 		log.Error().Err(err).Msg("failed to determine resource scope")
@@ -306,6 +304,7 @@ func (c *Cleaner) deleteAllResources(ctx context.Context, dc dynamic.Interface, 
 			Int("count", len(resources.Items)).
 			Msg("found cluster-scoped resources")
 	case false:
+		// For namespaced resources, check each namespace
 		namespaces, err := dc.Resource(namespaceGVR).List(ctx, metav1.ListOptions{})
 		if err != nil {
 			log.Error().Err(err).Msg("failed to list namespaces")
