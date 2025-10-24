@@ -412,10 +412,69 @@ func TestCleanupResources(t *testing.T) {
 			})
 			tt.mockSetup(mockClient)
 
+			// Setup mock REST mapper
+			mockMapper := mock.NewRESTMapper()
+
 			// Run the cleanup
-			err = tt.cleaner.CleanupResources(ctx, mockClient)
+			err = tt.cleaner.CleanupResources(ctx, mockClient, mockMapper)
 			if (err != nil) != tt.expectedError {
 				t.Errorf("expected error %v, got %v", tt.expectedError, err)
+			}
+		})
+	}
+}
+
+func TestIsResourceClusterScoped(t *testing.T) {
+	tests := []struct {
+		name                  string
+		gvr                   schema.GroupVersionResource
+		expectedClusterScoped bool
+		expectedError         bool
+	}{
+		{
+			name: "namespaced resource (test group)",
+			gvr: schema.GroupVersionResource{
+				Group:    "test",
+				Version:  "v1",
+				Resource: "resources",
+			},
+			expectedClusterScoped: false,
+			expectedError:         false,
+		},
+		{
+			name: "cluster-scoped resource (core group)",
+			gvr: schema.GroupVersionResource{
+				Group:    "",
+				Version:  "v1",
+				Resource: "namespaces",
+			},
+			expectedClusterScoped: true,
+			expectedError:         false,
+		},
+		{
+			name: "cluster-scoped resource (rbac group)",
+			gvr: schema.GroupVersionResource{
+				Group:    "rbac.authorization.k8s.io",
+				Version:  "v1",
+				Resource: "clusterroles",
+			},
+			expectedClusterScoped: true,
+			expectedError:         false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockMapper := mock.NewRESTMapper()
+
+			isClusterScoped, err := isResourceClusterScoped(mockMapper, tt.gvr)
+
+			if (err != nil) != tt.expectedError {
+				t.Errorf("expected error %v, got %v", tt.expectedError, err)
+			}
+
+			if isClusterScoped != tt.expectedClusterScoped {
+				t.Errorf("expected isClusterScoped=%v, got %v", tt.expectedClusterScoped, isClusterScoped)
 			}
 		})
 	}
