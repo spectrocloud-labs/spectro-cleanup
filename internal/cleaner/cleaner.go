@@ -276,14 +276,14 @@ func (c *Cleaner) runSelfCleanup(ctx context.Context, dc dynamic.Interface) erro
 		}
 	}
 
-	log.Info().
-		Str("gvr", self.GroupVersionResource.String()).
-		Str("name", self.Name).
-		Str("namespace", self.Namespace).
-		Msg("deleting self")
 	if err := c.deleteSingleResource(ctx, dc, *self); err != nil {
-		log.Error().Err(err).Msg("self-deletion failed")
-		return fmt.Errorf("self-deletion failed: %w", err)
+		log.Error().
+			Err(err).
+			Str("gvr", self.GroupVersionResource.String()).
+			Str("name", self.Name).
+			Str("namespace", self.Namespace).
+			Msg("self-deletion failed")
+		return fmt.Errorf("self-deletion failed for %s %q in namespace %q: %w", self.GroupVersionResource, self.Name, self.Namespace, err)
 	}
 	return nil
 }
