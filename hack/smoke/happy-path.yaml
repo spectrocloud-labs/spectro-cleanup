@@ -1,0 +1,128 @@
+---
+# Smoke test: happy path.
+# A spectro-cleanup Job processes resource-config.json and deletes two
+# canary resources. No --self-* flags are passed, so the Job stays around
+# after the binary exits; teardown of the Job itself is the caller's
+# responsibility (Helm hook-delete-policy, kind cluster deletion, etc.).
+# Expected end state:
+#   - victim/canary-cm   gone
+#   - victim/canary-sec  gone
+#   - Job spectro-cleanup-happy: condition=Complete
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: spectro-happy
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: victim
+---
+# Resources the cleanup Job is supposed to delete.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: canary-cm
+  namespace: victim
+data:
+  marker: "should-be-deleted"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: canary-sec
+  namespace: victim
+type: Opaque
+stringData:
+  marker: "should-be-deleted"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spectro-cleanup
+  namespace: spectro-happy
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: spectro-cleanup-happy-role
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets", "serviceaccounts"]
+    verbs: ["*"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["*"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles", "clusterrolebindings"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: spectro-cleanup-happy-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: spectro-cleanup-happy-role
+subjects:
+  - kind: ServiceAccount
+    name: spectro-cleanup
+    namespace: spectro-happy
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spectro-cleanup-config
+  namespace: spectro-happy
+data:
+  resource-config.json: |-
+    [
+      {
+        "group": "",
+        "version": "v1",
+        "resource": "configmaps",
+        "name": "canary-cm",
+        "namespace": "victim",
+        "mustDelete": true
+      },
+      {
+        "group": "",
+        "version": "v1",
+        "resource": "secrets",
+        "name": "canary-sec",
+        "namespace": "victim",
+        "mustDelete": true
+      }
+    ]
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: spectro-cleanup-happy
+  namespace: spectro-happy
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: spectro-cleanup
+      containers:
+        - name: cleanup
+          image: ${IMG}
+          imagePullPolicy: ${IMAGE_PULL_POLICY}
+          command: ["/cleanup"]
+          args:
+            - --sa-name=spectro-cleanup
+            - --cluster-role-name=spectro-cleanup-happy-role
+            - --cluster-role-binding-name=spectro-cleanup-happy-rolebinding
+          volumeMounts:
+            - name: cfg
+              mountPath: /tmp/spectro-cleanup
+      volumes:
+        - name: cfg
+          configMap:
+            name: spectro-cleanup-config
+            items:
+              - key: resource-config.json
+                path: resource-config.json
