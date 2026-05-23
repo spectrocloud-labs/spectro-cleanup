@@ -119,7 +119,7 @@ type Cleaner struct {
 // parseGVR parses a "group/version/resource" string. The group segment may be
 // empty for core resources (e.g. "/v1/pods").
 func parseGVR(s string) (schema.GroupVersionResource, error) {
-	parts := strings.SplitN(s, "/", 3)
+	parts := strings.Split(s, "/")
 	if len(parts) != 3 {
 		return schema.GroupVersionResource{}, fmt.Errorf("invalid GVR %q: expected group/version/resource", s)
 	}

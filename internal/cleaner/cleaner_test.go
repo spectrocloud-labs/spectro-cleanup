@@ -512,6 +512,11 @@ func TestParseGVR(t *testing.T) {
 			in:          "v1/jobs",
 			expectedErr: true,
 		},
+		{
+			name:        "too many segments",
+			in:          "batch/v1/jobs/extra",
+			expectedErr: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
