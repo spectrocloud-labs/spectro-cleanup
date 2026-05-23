@@ -101,8 +101,9 @@ data:
   # to illustrate that name and namespace are optional.
   # You would likely not want to do that in production :-)
   #
-  # The last two entries are for cleaning up the spectro-cleanup
-  # configuration and DaemonSet so that no traces are left behind.
+  # Note: the spectro-cleanup workload (this DaemonSet) and its RBAC are
+  # handled by the --self-gvr/--self-name/--self-namespace flags on the
+  # container, not by entries in resource-config.json.
   resource-config.json: |-
     [
       {
@@ -115,13 +116,6 @@ data:
         "version": "v1",
         "resource": "configmaps",
         "name": "spectro-cleanup-config",
-        "namespace": "kube-system"
-      },
-      {
-        "group": "apps",
-        "version": "v1",
-        "resource": "daemonsets",
-        "name": "spectro-cleanup",
         "namespace": "kube-system"
       }
     ]
@@ -158,6 +152,10 @@ spec:
       - name: spectro-cleanup
         image: gcr.io/spectro-images-public/release/spectro-cleanup:1.0.0
         command: ["/cleanup"]
+        args:
+        - --self-gvr=apps/v1/daemonsets
+        - --self-name=spectro-cleanup
+        - --self-namespace=kube-system
         resources:
           requests:
             cpu: "10m"
@@ -253,7 +251,11 @@ data:
       "/host/etc/cni/net.d/00-multus.conf",
       "/host/opt/cni/bin/multus"
     ]
-  # spectro-cleanup resources we want to delete
+  # spectro-cleanup resources we want to delete.
+  #
+  # Note: the spectro-cleanup workload (this Job) and its RBAC are
+  # handled by the --self-gvr/--self-name/--self-namespace flags on the
+  # container, not by entries in resource-config.json.
   resource-config.json: |-
     [
       {
@@ -261,13 +263,6 @@ data:
         "version": "v1",
         "resource": "configmaps",
         "name": "spectro-cleanup-config",
-        "namespace": "kube-system"
-      },
-      {
-        "group": "batch",
-        "version": "v1",
-        "resource": "jobs",
-        "name": "spectro-cleanup",
         "namespace": "kube-system"
       }
     ]
@@ -291,6 +286,9 @@ spec:
         command: ["/cleanup"]
         args:
         - --cleanup-timeout-seconds=10
+        - --self-gvr=batch/v1/jobs
+        - --self-name=spectro-cleanup
+        - --self-namespace=kube-system
         resources:
           requests:
             cpu: "10m"
@@ -326,15 +324,36 @@ spec:
 
 ### Configuration Notes
 
-To ensure that spectro-cleanup itself is cleaned up after its finished getting rid of your chosed files/resources on your cluster, 
-you'll need to ensure that the final objects in your `resource-config.json` are the spectro-cleanup `configmaps` and the `daemonset/job/pod`.
-If there are any resources added to the `resource-config.json` _after_ the two aformentioned spectro-cleanup resources, they will not be cleaned up.
+#### Self-cleanup
+
+When you want spectro-cleanup to delete its own workload after it finishes processing `resource-config.json`, pass the three `--self-*` flags to the container:
+
+| Flag | Purpose | Example |
+|------|---------|---------|
+| `--self-gvr` | GroupVersionResource of the cleanup workload, formatted as `group/version/resource`. Use an empty group segment for core resources (e.g. `/v1/pods`). | `batch/v1/jobs` |
+| `--self-name` | Metadata name of the cleanup workload. When set, self-cleanup is enabled. | `spectro-cleanup` |
+| `--self-namespace` | Namespace of the cleanup workload. Leave empty only when the target is cluster-scoped. | `kube-system` |
+
+With the flags set, after the main resource list is processed spectro-cleanup will:
+
+1. Get the self target and attach it as an `ownerReference` to the cleanup `ServiceAccount`, plus either (`Role`,`RoleBinding`) or (`ClusterRole`,`ClusterRoleBinding`) depending on which `--*-name` flags you also pass.
+2. Delete the self target. Kubernetes garbage collection then reaps the RBAC resources via the owner references.
+
+If `--self-name` is **not** set, self-cleanup is skipped entirely. The cleanup workload itself is expected to be garbage collected by whatever deployed it (for example, a Helm chart with `helm.sh/hook-delete-policy: "hook-failed,hook-succeeded"` on a pre-delete hook Job).
+
+> **Migration note:** previous versions required the spectro-cleanup `configmap` and `daemonset/job/pod` to appear as the **last entries** in `resource-config.json`. That implicit contract is gone. Existing configs that still list the cleanup workload as an entry will treat it as an ordinary delete (the implicit owner-reference wiring is no longer performed). Move the workload identity into `--self-*` flags and remove it from `resource-config.json`.
+
+#### Blocking deletion
 
 By default, delete operations for kubernetes resources are blocking. The cleanup process will poll until the resource is fully removed from the API server. You can customize this behaviour via `--blocking-deletion` (defaults to `true`). The polling interval and timeout default to 2s and 5m, respectively, and be customized via `--deletion-interval-seconds`, and `--deletion-timeout-seconds`.
 
-You can also optionally configure a gRPC server to run as a part of spectro-cleanup. This server has a single endpoint, `FinalizeCleanup`.
-When this server is configured, spectro-cleanup will be able to wait for a request that notifies it that it can finally clean itself up.
-In this case, the `--cleanup-timeout-seconds` flag will have the fallback time to self destruct in the case that a request is never made to the `FinalizeCleanup` endpoint.
+#### Non-blocking self-cleanup via gRPC
+
+You can optionally configure a gRPC server to run as a part of spectro-cleanup. This server has a single endpoint, `FinalizeCleanup`.
+When this server is configured **and self-cleanup is enabled via the `--self-*` flags**, spectro-cleanup will wait for a `FinalizeCleanup` request before deleting itself.
+In this case, the `--cleanup-timeout-seconds` flag is the fallback time to self destruct if the `FinalizeCleanup` request never arrives.
+
+The gRPC server has no effect when self-cleanup is disabled: if `--self-name` is unset, spectro-cleanup exits immediately after processing `resource-config.json`.
 
 Below you can see an example of how to configure the gRPC server on your daemonset or job:
 
@@ -359,6 +378,9 @@ spec:
         command: ["/cleanup"]
         args:
         - --cleanup-timeout-seconds=300
+        - --self-gvr=batch/v1/jobs
+        - --self-name=validator-cleanup
+        - --self-namespace={{ .Release.Namespace }}
         {{- if .Values.cleanup.grpcServerEnabled }}
         - --enable-grpc-server
         - --grpc-port={{ required ".Values.cleanup.port is required!" .Values.cleanup.port | toString | quote }}

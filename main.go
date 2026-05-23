@@ -79,6 +79,10 @@ func main() {
 	flag.StringVar(&c.ClusterRoleName, "cluster-role-name", c.RoleName, "ClusterRole name for cleanup Pod/DaemonSet/Job. If set, role-name will be ignored.")
 	flag.StringVar(&c.ClusterRoleBindingName, "cluster-role-binding-name", c.RoleBindingName, "ClusterRoleBinding name for cleanup Pod/DaemonSet/Job. If set, role-binding-name will be ignored.")
 
+	flag.StringVar(&c.SelfGVR, "self-gvr", c.SelfGVR, "GroupVersionResource of the cleanup Pod/DaemonSet/Job formatted as \"group/version/resource\" (e.g. \"batch/v1/jobs\", \"apps/v1/daemonsets\", \"/v1/pods\"). Required with --self-name to enable self-cleanup.")
+	flag.StringVar(&c.SelfName, "self-name", c.SelfName, "Name of the cleanup Pod/DaemonSet/Job. When set, spectro-cleanup attaches owner references to its RBAC and deletes itself after the rest of the cleanup completes.")
+	flag.StringVar(&c.SelfNamespace, "self-namespace", c.SelfNamespace, "Namespace of the cleanup Pod/DaemonSet/Job. Leave empty only for cluster-scoped self-cleanup targets.")
+
 	flag.BoolVar(&c.Debug, "debug", c.Debug, "Enable debug logging")
 
 	if c.ClusterRoleName == "" && c.ClusterRoleBindingName != "" || c.ClusterRoleName != "" && c.ClusterRoleBindingName == "" {

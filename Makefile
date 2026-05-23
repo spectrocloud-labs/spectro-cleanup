@@ -5,7 +5,7 @@
 
 # binary versions
 BIN_DIR ?= ./bin
-BUILDER_GOLANG_VERSION ?= 1.25
+BUILDER_GOLANG_VERSION ?= 1.26
 FIPS_MODULE ?= boringcrypto
 GOLANGCI_VERSION ?= 2.5.0
 
@@ -46,6 +46,10 @@ vet: ## Run go vet against code
 docker: ## Builds and pushes multi-arch docker image
 	docker buildx create --name multiarch --use || true
 	docker buildx build --platform $(PLATFORMS) $(BUILD_ARGS) -t $(CLEANUP_IMG) --push -f ./Dockerfile .
+	docker buildx rm multiarch
+docker-local: ## Builds multi-arch docker image into local docker daemon (no push). Requires the containerd image store enabled in Docker.
+	docker buildx create --name multiarch --use || true
+	docker buildx build --platform $(PLATFORMS) $(BUILD_ARGS) -t $(CLEANUP_IMG) --load -f ./Dockerfile .
 	docker buildx rm multiarch
 docker-rmi: ## Remove the local docker images
 	docker rmi $(CLEANUP_IMG)
