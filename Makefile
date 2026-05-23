@@ -7,7 +7,7 @@
 BIN_DIR ?= ./bin
 BUILDER_GOLANG_VERSION ?= 1.26
 FIPS_MODULE ?= boringcrypto
-GOLANGCI_VERSION ?= 2.5.0
+GOLANGCI_VERSION ?= 2.12.2
 
 GOOS ?= $(shell go env GOOS)
 GOARCH ?= $(shell go env GOARCH)
