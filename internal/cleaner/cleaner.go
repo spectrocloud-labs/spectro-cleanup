@@ -561,11 +561,6 @@ func retryable(err error) bool {
 
 // setOwnerReferences ensures garbage collection of RBAC resources used by cleanup Pod/DaemonSet/Job post self-destruction
 func (c *Cleaner) setOwnerReferences(ctx context.Context, dc dynamic.Interface, obj DeleteObj) error {
-	log.Info().
-		Str("gvr", obj.GroupVersionResource.String()).
-		Str("name", obj.Name).
-		Str("namespace", obj.Namespace).
-		Msg("Setting cleanup owner references")
 	owner, err := dc.Resource(obj.GroupVersionResource).Namespace(obj.Namespace).Get(ctx, obj.Name, metav1.GetOptions{})
 	if err != nil {
 		log.Error().
