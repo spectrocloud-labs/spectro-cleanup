@@ -35,8 +35,6 @@ import (
 	cleanv1 "buf.build/gen/go/spectrocloud/spectro-cleanup/protocolbuffers/go/cleanup/v1"
 	connect "connectrpc.com/connect"
 	"github.com/rs/zerolog/log"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -51,6 +49,9 @@ import (
 const (
 	filesToDelete     = "filesToDelete"
 	resourcesToDelete = "resourcesToDelete"
+
+	rbacAPIGroup       = "rbac.authorization.k8s.io"
+	namespacesResource = "namespaces"
 )
 
 var (
@@ -60,11 +61,11 @@ var (
 	// ErrIllegalCleanupNotification is returned when cleanup is notified before resources are cleaned.
 	ErrIllegalCleanupNotification = errors.New("illegally notified cleanup prior to cleanup resources call")
 
-	clusterRoleGVR        = schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterroles"}
-	clusterRoleBindingGVR = schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterrolebindings"}
-	roleGVR               = schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "roles"}
-	roleBindingGVR        = schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "rolebindings"}
-	namespaceGVR          = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "namespaces"}
+	clusterRoleGVR        = schema.GroupVersionResource{Group: rbacAPIGroup, Version: "v1", Resource: "clusterroles"}
+	clusterRoleBindingGVR = schema.GroupVersionResource{Group: rbacAPIGroup, Version: "v1", Resource: "clusterrolebindings"}
+	roleGVR               = schema.GroupVersionResource{Group: rbacAPIGroup, Version: "v1", Resource: "roles"}
+	roleBindingGVR        = schema.GroupVersionResource{Group: rbacAPIGroup, Version: "v1", Resource: "rolebindings"}
+	namespaceGVR          = schema.GroupVersionResource{Group: "", Version: "v1", Resource: namespacesResource}
 	serviceAccountGVR     = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "serviceaccounts"}
 )
 
@@ -672,9 +673,13 @@ func (c *Cleaner) StartGRPCServer(wg *sync.WaitGroup) {
 	path, handler := cleanupv1connect.NewCleanupServiceHandler(&cleanupServiceServer{})
 	mux.Handle(path, handler)
 	address := fmt.Sprintf("0.0.0.0:%d", c.GRPCPort)
+	protocols := &http.Protocols{}
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
 	server := &http.Server{
 		Addr:         address,
-		Handler:      h2c.NewHandler(mux, &http2.Server{}),
+		Handler:      mux,
+		Protocols:    protocols,
 		ReadTimeout:  1 * time.Second,
 		WriteTimeout: 1 * time.Second,
 	}

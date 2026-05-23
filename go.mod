@@ -7,7 +7,6 @@ require (
 	buf.build/gen/go/spectrocloud/spectro-cleanup/protocolbuffers/go v1.31.0-20231213011348-5645e27c876a.2
 	connectrpc.com/connect v1.13.0
 	github.com/rs/zerolog v1.33.0
-	golang.org/x/net v0.55.0
 	k8s.io/apimachinery v0.33.0
 	k8s.io/client-go v0.33.0
 )
@@ -34,6 +33,7 @@ require (
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/spf13/pflag v1.0.6 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
+	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/oauth2 v0.28.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/term v0.43.0 // indirect
