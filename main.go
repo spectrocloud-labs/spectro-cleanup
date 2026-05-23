@@ -85,11 +85,15 @@ func main() {
 
 	flag.BoolVar(&c.Debug, "debug", c.Debug, "Enable debug logging")
 
+	flag.Parse()
+
 	if c.ClusterRoleName == "" && c.ClusterRoleBindingName != "" || c.ClusterRoleName != "" && c.ClusterRoleBindingName == "" {
-		log.Fatal().Msg("cluster-role-name and cluster-role-binding-name must be set together")
+		log.Fatal().Msg("--cluster-role-name and --cluster-role-binding-name must be set together")
 	}
 
-	flag.Parse()
+	if c.EnableGRPCServer && c.SelfName == "" {
+		log.Fatal().Msg("--enable-grpc-server requires --self-name to be set")
+	}
 
 	// Default level for this example is info, unless debug flag is present
 	zerolog.SetGlobalLevel(zerolog.InfoLevel)

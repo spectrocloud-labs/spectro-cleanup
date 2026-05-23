@@ -212,7 +212,25 @@ func (c *Cleaner) CleanupResources(ctx context.Context, dc dynamic.Interface, rm
 		return fmt.Errorf("failed to unmarshal resource cleanup config: %w", err)
 	}
 
-	*notif = make(chan bool)
+	self, err := c.SelfCleanupTarget()
+	if err != nil {
+		return err
+	}
+
+	// Open the FinalizeCleanup notification channel only when self-cleanup
+	// will actually read from it. Otherwise a FinalizeCleanup gRPC call has
+	// no receiver: the send blocks, and a later close panics the handler.
+	notifOpen := false
+	if self != nil && !c.BlockingDeletion {
+		*notif = make(chan bool)
+		notifOpen = true
+	}
+	defer func() {
+		if notifOpen {
+			close(*notif)
+			*notif = nil
+		}
+	}()
 
 	for _, obj := range resources {
 		var err error
@@ -235,22 +253,12 @@ func (c *Cleaner) CleanupResources(ctx context.Context, dc dynamic.Interface, rm
 		}
 	}
 
-	if err := c.runSelfCleanup(ctx, dc); err != nil {
-		return err
-	}
-
-	close(*notif)
-	*notif = nil
-	return nil
+	return c.runSelfCleanup(ctx, dc, self)
 }
 
 // runSelfCleanup wires owner references on the cleanup workload's RBAC then
 // deletes the workload itself. No-op when no self-cleanup target is configured.
-func (c *Cleaner) runSelfCleanup(ctx context.Context, dc dynamic.Interface) error {
-	self, err := c.SelfCleanupTarget()
-	if err != nil {
-		return err
-	}
+func (c *Cleaner) runSelfCleanup(ctx context.Context, dc dynamic.Interface, self *DeleteObj) error {
 	if self == nil {
 		log.Debug().Msg("self-cleanup target not configured, skipping")
 		return nil
