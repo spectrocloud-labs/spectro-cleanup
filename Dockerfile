@@ -28,7 +28,7 @@ RUN export GOOS=${TARGETOS} && \
     export TARGETPLATFORM=${TARGETOS}/${TARGETARCH} && \
     export CC=$(xx-clang --print-target-triple)-clang && \
     export CXX=$(xx-clang --print-target-triple)-clang++ && \
-    export GOTOOLCHAIN=auto && \
+    export GOTOOLCHAIN=go1.26.3+auto && \
     if [ "${FIPS_MODULE}" = "boringcrypto" ]; then \
         go-build-fips.sh -a -o cleanup; \
         go tool nm cleanup | grep FIPS; \
