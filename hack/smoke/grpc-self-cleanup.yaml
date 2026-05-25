@@ -1,0 +1,135 @@
+---
+# Smoke test: gRPC FinalizeCleanup + self-cleanup.
+# Exercises the gRPC FinalizeCleanup endpoint and the self-cleanup phase
+# that it gates. The Pod:
+#   - processes resource-config.json (deletes a canary ConfigMap + Secret)
+#   - holds in runSelfCleanup waiting for a FinalizeCleanup notification
+#     (BlockingDeletion=false)
+#   - on notification, deletes itself via --self-* flags
+# Expected end state:
+#   - victim-grpc/canary-cm        gone
+#   - victim-grpc/canary-sec       gone
+#   - Pod spectro-cleanup-grpc:    gone (self-deleted)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: spectro-grpc
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: victim-grpc
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: canary-cm
+  namespace: victim-grpc
+data:
+  marker: "should-be-deleted"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: canary-sec
+  namespace: victim-grpc
+type: Opaque
+stringData:
+  marker: "should-be-deleted"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spectro-cleanup
+  namespace: spectro-grpc
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: spectro-cleanup-grpc-role
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets", "serviceaccounts", "pods"]
+    verbs: ["*"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles", "clusterrolebindings"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: spectro-cleanup-grpc-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: spectro-cleanup-grpc-role
+subjects:
+  - kind: ServiceAccount
+    name: spectro-cleanup
+    namespace: spectro-grpc
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spectro-cleanup-config
+  namespace: spectro-grpc
+data:
+  resource-config.json: |-
+    [
+      {
+        "group": "",
+        "version": "v1",
+        "resource": "configmaps",
+        "name": "canary-cm",
+        "namespace": "victim-grpc",
+        "mustDelete": true
+      },
+      {
+        "group": "",
+        "version": "v1",
+        "resource": "secrets",
+        "name": "canary-sec",
+        "namespace": "victim-grpc",
+        "mustDelete": true
+      }
+    ]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: spectro-cleanup-grpc
+  namespace: spectro-grpc
+  labels:
+    app: spectro-cleanup-grpc
+spec:
+  restartPolicy: Never
+  serviceAccountName: spectro-cleanup
+  containers:
+    - name: cleanup
+      image: ${IMG}
+      imagePullPolicy: ${IMAGE_PULL_POLICY}
+      command: ["/cleanup"]
+      args:
+        - --sa-name=spectro-cleanup
+        - --cluster-role-name=spectro-cleanup-grpc-role
+        - --cluster-role-binding-name=spectro-cleanup-grpc-rolebinding
+        - --blocking-deletion=false
+        - --enable-grpc-server
+        - --grpc-port=8080
+        - --cleanup-timeout=600
+        - --self-gvr=/v1/pods
+        - --self-name=spectro-cleanup-grpc
+        - --self-namespace=spectro-grpc
+      ports:
+        - containerPort: 8080
+          name: grpc
+      volumeMounts:
+        - name: cfg
+          mountPath: /tmp/spectro-cleanup
+  volumes:
+    - name: cfg
+      configMap:
+        name: spectro-cleanup-config
+        items:
+          - key: resource-config.json
+            path: resource-config.json

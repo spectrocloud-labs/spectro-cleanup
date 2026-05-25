@@ -35,8 +35,6 @@ import (
 	cleanv1 "buf.build/gen/go/spectrocloud/spectro-cleanup/protocolbuffers/go/cleanup/v1"
 	connect "connectrpc.com/connect"
 	"github.com/rs/zerolog/log"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -51,6 +49,9 @@ import (
 const (
 	filesToDelete     = "filesToDelete"
 	resourcesToDelete = "resourcesToDelete"
+
+	rbacAPIGroup       = "rbac.authorization.k8s.io"
+	namespacesResource = "namespaces"
 )
 
 var (
@@ -60,11 +61,11 @@ var (
 	// ErrIllegalCleanupNotification is returned when cleanup is notified before resources are cleaned.
 	ErrIllegalCleanupNotification = errors.New("illegally notified cleanup prior to cleanup resources call")
 
-	clusterRoleGVR        = schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterroles"}
-	clusterRoleBindingGVR = schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterrolebindings"}
-	roleGVR               = schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "roles"}
-	roleBindingGVR        = schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "rolebindings"}
-	namespaceGVR          = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "namespaces"}
+	clusterRoleGVR        = schema.GroupVersionResource{Group: rbacAPIGroup, Version: "v1", Resource: "clusterroles"}
+	clusterRoleBindingGVR = schema.GroupVersionResource{Group: rbacAPIGroup, Version: "v1", Resource: "clusterrolebindings"}
+	roleGVR               = schema.GroupVersionResource{Group: rbacAPIGroup, Version: "v1", Resource: "roles"}
+	roleBindingGVR        = schema.GroupVersionResource{Group: rbacAPIGroup, Version: "v1", Resource: "rolebindings"}
+	namespaceGVR          = schema.GroupVersionResource{Group: "", Version: "v1", Resource: namespacesResource}
 	serviceAccountGVR     = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "serviceaccounts"}
 )
 
@@ -101,11 +102,56 @@ type Cleaner struct {
 	RoleBindingName        string
 	ClusterRoleName        string
 	ClusterRoleBindingName string
+
+	// Self-cleanup target. When SelfName is set, spectro-cleanup runs
+	// setOwnerReferences against this object after all other resources are
+	// cleaned, then deletes the object itself. Leave SelfName empty to
+	// disable self-cleanup (the deploying chart is then expected to garbage
+	// collect the cleanup workload, e.g. via a Helm hook-delete-policy).
+	//
+	// SelfGVR is "group/version/resource" (e.g. "batch/v1/jobs",
+	// "apps/v1/daemonsets", "/v1/pods" for core).
+	SelfGVR       string
+	SelfName      string
+	SelfNamespace string
+}
+
+// parseGVR parses a "group/version/resource" string. The group segment may be
+// empty for core resources (e.g. "/v1/pods").
+func parseGVR(s string) (schema.GroupVersionResource, error) {
+	parts := strings.Split(s, "/")
+	if len(parts) != 3 {
+		return schema.GroupVersionResource{}, fmt.Errorf("invalid GVR %q: expected group/version/resource", s)
+	}
+	if parts[1] == "" || parts[2] == "" {
+		return schema.GroupVersionResource{}, fmt.Errorf("invalid GVR %q: version and resource are required", s)
+	}
+	return schema.GroupVersionResource{Group: parts[0], Version: parts[1], Resource: parts[2]}, nil
 }
 
 // UseClusterRole returns true if both cluster role and cluster role binding are set.
 func (c *Cleaner) UseClusterRole() bool {
 	return c.ClusterRoleName != "" && c.ClusterRoleBindingName != ""
+}
+
+// SelfCleanupTarget returns the resource this cleanup Pod/Job/DaemonSet should
+// remove after the rest of the resource cleanup completes, or nil when
+// self-cleanup is disabled. Returns an error if SelfName is set but SelfGVR
+// fails to parse.
+func (c *Cleaner) SelfCleanupTarget() (*DeleteObj, error) {
+	if c.SelfName == "" {
+		return nil, nil
+	}
+	gvr, err := parseGVR(c.SelfGVR)
+	if err != nil {
+		return nil, fmt.Errorf("invalid --self-gvr: %w", err)
+	}
+	return &DeleteObj{
+		GroupVersionResource: gvr,
+		Name:                 c.SelfName,
+		Namespace:            c.SelfNamespace,
+		MustDelete:           true,
+	}, nil
 }
 
 // readConfig loads a configuration file from the local filesystem
@@ -166,33 +212,27 @@ func (c *Cleaner) CleanupResources(ctx context.Context, dc dynamic.Interface, rm
 		return fmt.Errorf("failed to unmarshal resource cleanup config: %w", err)
 	}
 
-	*notif = make(chan bool)
+	self, err := c.SelfCleanupTarget()
+	if err != nil {
+		return err
+	}
 
-	numObjs := len(resources)
-	for i, obj := range resources {
-		// the final object in the resource config must be the spectro-cleanup Pod/DaemonSet/Job
-		if i == numObjs-1 {
-			if err := c.setOwnerReferences(ctx, dc, obj); err != nil {
-				return err
-			}
-
-			// If BlockingDeletion is true, we've already waited for all resources to be deleted,
-			// therefore we can self destruct immediately.
-			if c.BlockingDeletion {
-				log.Info().Msg("Self destructing...")
-			} else {
-				log.Info().
-					Str("maxDelaySeconds", fmt.Sprintf("%.0f", c.CleanupTimeout.Seconds())).
-					Msg("Waiting for final cleanup notification or timeout before destructing...")
-				select {
-				case <-*notif:
-					log.Info().Msg("FinalizeCleanup notification received, self destructing...")
-				case <-time.After(c.CleanupTimeout):
-					log.Info().Msg(fmt.Sprintf("%.0f seconds elapsed, self destructing...", c.CleanupTimeout.Seconds()))
-				}
-			}
+	// Open the FinalizeCleanup notification channel only when self-cleanup
+	// will actually read from it. Otherwise a FinalizeCleanup gRPC call has
+	// no receiver: the send blocks, and a later close panics the handler.
+	notifOpen := false
+	if self != nil && !c.BlockingDeletion {
+		*notif = make(chan bool)
+		notifOpen = true
+	}
+	defer func() {
+		if notifOpen {
+			close(*notif)
+			*notif = nil
 		}
+	}()
 
+	for _, obj := range resources {
 		var err error
 		if obj.Name == "" {
 			err = c.deleteAllResources(ctx, dc, rm, obj)
@@ -213,8 +253,46 @@ func (c *Cleaner) CleanupResources(ctx context.Context, dc dynamic.Interface, rm
 		}
 	}
 
-	close(*notif)
-	*notif = nil
+	return c.runSelfCleanup(ctx, dc, self)
+}
+
+// runSelfCleanup wires owner references on the cleanup workload's RBAC then
+// deletes the workload itself. No-op when no self-cleanup target is configured.
+func (c *Cleaner) runSelfCleanup(ctx context.Context, dc dynamic.Interface, self *DeleteObj) error {
+	if self == nil {
+		log.Debug().Msg("self-cleanup target not configured, skipping")
+		return nil
+	}
+
+	if err := c.setOwnerReferences(ctx, dc, *self); err != nil {
+		return err
+	}
+
+	// If BlockingDeletion is true, we've already waited for all resources to be deleted,
+	// therefore we can self destruct immediately.
+	if c.BlockingDeletion {
+		log.Info().Msg("Self destructing...")
+	} else {
+		log.Info().
+			Str("maxDelaySeconds", fmt.Sprintf("%.0f", c.CleanupTimeout.Seconds())).
+			Msg("Waiting for final cleanup notification or timeout before destructing...")
+		select {
+		case <-*notif:
+			log.Info().Msg("FinalizeCleanup notification received, self destructing...")
+		case <-time.After(c.CleanupTimeout):
+			log.Info().Msg(fmt.Sprintf("%.0f seconds elapsed, self destructing...", c.CleanupTimeout.Seconds()))
+		}
+	}
+
+	if err := c.deleteSingleResource(ctx, dc, *self); err != nil {
+		log.Error().
+			Err(err).
+			Str("gvr", self.GroupVersionResource.String()).
+			Str("name", self.Name).
+			Str("namespace", self.Namespace).
+			Msg("self-deletion failed")
+		return fmt.Errorf("self-deletion failed for %s %q in namespace %q: %w", self.GroupVersionResource, self.Name, self.Namespace, err)
+	}
 	return nil
 }
 
@@ -493,8 +571,13 @@ func retryable(err error) bool {
 func (c *Cleaner) setOwnerReferences(ctx context.Context, dc dynamic.Interface, obj DeleteObj) error {
 	owner, err := dc.Resource(obj.GroupVersionResource).Namespace(obj.Namespace).Get(ctx, obj.Name, metav1.GetOptions{})
 	if err != nil {
-		log.Error().Err(err).Msg("failed to get resource")
-		return fmt.Errorf("failed to get resource: %w", err)
+		log.Error().
+			Err(err).
+			Str("gvr", obj.GroupVersionResource.String()).
+			Str("name", obj.Name).
+			Str("namespace", obj.Namespace).
+			Msg("failed to get owner resource for setOwnerReferences")
+		return fmt.Errorf("failed to get owner resource %s %q in namespace %q: %w", obj.GroupVersionResource, obj.Name, obj.Namespace, err)
 	}
 	ownerRef := metav1.OwnerReference{
 		APIVersion: owner.GetAPIVersion(),
@@ -536,8 +619,13 @@ func (c *Cleaner) setOwnerReferences(ctx context.Context, dc dynamic.Interface, 
 func (c *Cleaner) setOwnerReferenceForResource(ctx context.Context, dc dynamic.Interface, key types.NamespacedName, ownerRef metav1.OwnerReference, gvr schema.GroupVersionResource) error {
 	resource, err := dc.Resource(gvr).Namespace(key.Namespace).Get(ctx, key.Name, metav1.GetOptions{})
 	if err != nil {
-		log.Error().Err(err).Msg("failed to get resource")
-		return fmt.Errorf("failed to get resource: %w", err)
+		log.Error().
+			Err(err).
+			Str("gvr", gvr.String()).
+			Str("name", key.Name).
+			Str("namespace", key.Namespace).
+			Msg("failed to get resource for owner reference")
+		return fmt.Errorf("failed to get resource %s %q in namespace %q: %w", gvr, key.Name, key.Namespace, err)
 	}
 
 	ownerReferences := resource.GetOwnerReferences()
@@ -546,8 +634,13 @@ func (c *Cleaner) setOwnerReferenceForResource(ctx context.Context, dc dynamic.I
 
 	_, err = dc.Resource(gvr).Namespace(key.Namespace).Update(ctx, resource, metav1.UpdateOptions{})
 	if err != nil {
-		log.Error().Err(err).Msg("failed to update resource with owner reference")
-		return fmt.Errorf("failed to update resource with owner reference: %w", err)
+		log.Error().
+			Err(err).
+			Str("gvr", gvr.String()).
+			Str("name", key.Name).
+			Str("namespace", key.Namespace).
+			Msg("failed to update resource with owner reference")
+		return fmt.Errorf("failed to update resource %s %q in namespace %q with owner reference: %w", gvr, key.Name, key.Namespace, err)
 	}
 
 	log.Info().Str(gvr.Resource, key.Name).Msg("Set cleanup ownerReference")
@@ -583,9 +676,13 @@ func (c *Cleaner) StartGRPCServer(wg *sync.WaitGroup) {
 	path, handler := cleanupv1connect.NewCleanupServiceHandler(&cleanupServiceServer{})
 	mux.Handle(path, handler)
 	address := fmt.Sprintf("0.0.0.0:%d", c.GRPCPort)
+	protocols := &http.Protocols{}
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
 	server := &http.Server{
 		Addr:         address,
-		Handler:      h2c.NewHandler(mux, &http2.Server{}),
+		Handler:      mux,
+		Protocols:    protocols,
 		ReadTimeout:  1 * time.Second,
 		WriteTimeout: 1 * time.Second,
 	}

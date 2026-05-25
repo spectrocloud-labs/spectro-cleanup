@@ -12,7 +12,7 @@ jobs:
   govulncheck-pr-scan:
     runs-on: ubuntu-latest
     container:
-      image: golang:1.25.1-alpine3.22@sha256:b6ed3fd0452c0e9bcdef5597f29cc1418f61672e9d3a2f55bf02e7222c014abd
+      image: golang:1.26.3-alpine3.22@sha256:be93003ee861b3b91b6ebcb22678524947e0cd786c2df3f32af520006b1e54f5
     steps:
       - name: install-govulncheck
         run: GOBIN=/usr/local/bin go install golang.org/x/vuln/cmd/govulncheck@latest

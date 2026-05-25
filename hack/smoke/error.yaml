@@ -1,0 +1,89 @@
+---
+# Smoke test: error path.
+# Exercises the structured error logging that fires when setOwnerReferences
+# cannot resolve its target. The Job's --self-* flags point at a Job that
+# does not exist, so the first Get in setOwnerReferences returns NotFound.
+# Expected error in the pod logs:
+#   {"level":"error","gvr":"batch/v1, Resource=jobs","name":"does-not-exist",
+#    "namespace":"spectro-test","message":"failed to get owner resource for setOwnerReferences"}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: spectro-test
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spectro-cleanup
+  namespace: spectro-test
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: spectro-cleanup-err-role
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps", "serviceaccounts"]
+    verbs: ["*"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["*"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles", "clusterrolebindings"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: spectro-cleanup-err-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: spectro-cleanup-err-role
+subjects:
+  - kind: ServiceAccount
+    name: spectro-cleanup
+    namespace: spectro-test
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spectro-cleanup-config
+  namespace: spectro-test
+data:
+  resource-config.json: |-
+    []
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: spectro-cleanup-bad-self
+  namespace: spectro-test
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: spectro-cleanup
+      containers:
+        - name: cleanup
+          image: ${IMG}
+          imagePullPolicy: ${IMAGE_PULL_POLICY}
+          command: ["/cleanup"]
+          args:
+            - --sa-name=spectro-cleanup
+            - --cluster-role-name=spectro-cleanup-err-role
+            - --cluster-role-binding-name=spectro-cleanup-err-rolebinding
+            - --self-gvr=batch/v1/jobs
+            - --self-name=does-not-exist
+            - --self-namespace=spectro-test
+          volumeMounts:
+            - name: cfg
+              mountPath: /tmp/spectro-cleanup
+      volumes:
+        - name: cfg
+          configMap:
+            name: spectro-cleanup-config
+            items:
+              - key: resource-config.json
+                path: resource-config.json

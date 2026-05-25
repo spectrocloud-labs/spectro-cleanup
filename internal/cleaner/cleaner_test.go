@@ -480,6 +480,224 @@ func TestIsResourceClusterScoped(t *testing.T) {
 	}
 }
 
+func TestParseGVR(t *testing.T) {
+	tests := []struct {
+		name        string
+		in          string
+		expected    schema.GroupVersionResource
+		expectedErr bool
+	}{
+		{
+			name:     "named group",
+			in:       "batch/v1/jobs",
+			expected: schema.GroupVersionResource{Group: "batch", Version: "v1", Resource: "jobs"},
+		},
+		{
+			name:     "core group (empty leading segment)",
+			in:       "/v1/configmaps",
+			expected: schema.GroupVersionResource{Group: "", Version: "v1", Resource: "configmaps"},
+		},
+		{
+			name:        "missing version",
+			in:          "batch//jobs",
+			expectedErr: true,
+		},
+		{
+			name:        "missing resource",
+			in:          "batch/v1/",
+			expectedErr: true,
+		},
+		{
+			name:        "too few segments",
+			in:          "v1/jobs",
+			expectedErr: true,
+		},
+		{
+			name:        "too many segments",
+			in:          "batch/v1/jobs/extra",
+			expectedErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseGVR(tt.in)
+			if (err != nil) != tt.expectedErr {
+				t.Fatalf("expected error %v, got %v", tt.expectedErr, err)
+			}
+			if !tt.expectedErr && got != tt.expected {
+				t.Errorf("expected %+v, got %+v", tt.expected, got)
+			}
+		})
+	}
+}
+
+func TestSelfCleanupTarget(t *testing.T) {
+	tests := []struct {
+		name        string
+		cleaner     *Cleaner
+		expectNil   bool
+		expectedErr bool
+		expected    *DeleteObj
+	}{
+		{
+			name:      "disabled when SelfName empty",
+			cleaner:   &Cleaner{SelfGVR: "batch/v1/jobs"},
+			expectNil: true,
+		},
+		{
+			name:        "invalid GVR returns error",
+			cleaner:     &Cleaner{SelfName: "x", SelfGVR: "garbage"},
+			expectedErr: true,
+		},
+		{
+			name:    "valid namespaced target",
+			cleaner: &Cleaner{SelfGVR: "batch/v1/jobs", SelfName: "mural-cleanup", SelfNamespace: "mural-system"},
+			expected: &DeleteObj{
+				GroupVersionResource: schema.GroupVersionResource{Group: "batch", Version: "v1", Resource: "jobs"},
+				Name:                 "mural-cleanup",
+				Namespace:            "mural-system",
+				MustDelete:           true,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := tt.cleaner.SelfCleanupTarget()
+			if (err != nil) != tt.expectedErr {
+				t.Fatalf("expected error %v, got %v", tt.expectedErr, err)
+			}
+			if tt.expectNil {
+				if got != nil {
+					t.Errorf("expected nil target, got %+v", got)
+				}
+				return
+			}
+			if tt.expected != nil && got != nil && *got != *tt.expected {
+				t.Errorf("expected %+v, got %+v", *tt.expected, *got)
+			}
+		})
+	}
+}
+
+// TestCleanupResources_SelfCleanupWithClusterScopedLastEntry covers the bug
+// where a cluster-scoped resource as the last config entry caused
+// setOwnerReferences to derive an empty SA namespace and fatal with
+// "the server could not find the requested resource". With explicit self
+// flags, the cleanup workload is identified independently of config order
+// and self-cleanup proceeds against the correctly scoped target.
+func TestCleanupResources_SelfCleanupWithClusterScopedLastEntry(t *testing.T) {
+	ctx := context.Background()
+
+	c := &Cleaner{
+		BlockingDeletion:       false, // skip post-delete polling to keep the test fast
+		DeletionInterval:       time.Millisecond * 10,
+		DeletionTimeout:        time.Second,
+		CleanupTimeout:         time.Millisecond * 50,
+		SAName:                 "spectro-cleanup-sa",
+		ClusterRoleName:        "spectro-cleanup-role",
+		ClusterRoleBindingName: "spectro-cleanup-rolebinding",
+		SelfGVR:                "batch/v1/jobs",
+		SelfName:               "spectro-cleanup",
+		SelfNamespace:          "kube-system",
+	}
+
+	resources := []DeleteObj{
+		{
+			// Cluster-scoped last entry: this is the bug condition.
+			GroupVersionResource: schema.GroupVersionResource{Group: "", Version: "v1", Resource: "namespaces"},
+			Name:                 "managed-cluster-set-spokes",
+			MustDelete:           true,
+		},
+	}
+
+	tmpFile, err := os.CreateTemp("", "resources-*.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpFile.Name())
+	configBytes, err := json.Marshal(resources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tmpFile.Name(), configBytes, 0644); err != nil {
+		t.Fatal(err)
+	}
+	c.ResourceConfigPath = tmpFile.Name()
+
+	// RBAC names always resolve via DefaultResource; the self-cleanup target
+	// goes through GetFunc so we can assert it was Get'd in the correct namespace.
+	mockClient := mock.NewDynamicClient([]string{
+		c.SAName, c.ClusterRoleName, c.ClusterRoleBindingName,
+	})
+	mockClient.GetFunc = func(_ context.Context, name string, _ metav1.GetOptions, _ ...string) (*unstructured.Unstructured, error) {
+		return &unstructured.Unstructured{
+			Object: map[string]interface{}{
+				"apiVersion": "batch/v1",
+				"kind":       "Job",
+				"metadata": map[string]interface{}{
+					"name":      name,
+					"namespace": "kube-system",
+					"uid":       "test-uid",
+				},
+			},
+		}, nil
+	}
+
+	if err := c.CleanupResources(ctx, mockClient, mock.NewRESTMapper()); err != nil {
+		t.Fatalf("CleanupResources returned unexpected error: %v", err)
+	}
+}
+
+// TestCleanupResources_NoSelfCleanup verifies that with SelfName unset,
+// spectro-cleanup processes every config entry as a regular delete without
+// any special last-entry handling, and runSelfCleanup is a no-op.
+func TestCleanupResources_NoSelfCleanup(t *testing.T) {
+	ctx := context.Background()
+
+	c := &Cleaner{
+		BlockingDeletion: false,
+		DeletionInterval: time.Millisecond * 10,
+		DeletionTimeout:  time.Second,
+	}
+
+	resources := []DeleteObj{
+		{
+			GroupVersionResource: schema.GroupVersionResource{Group: "", Version: "v1", Resource: "namespaces"},
+			Name:                 "managed-cluster-set-spokes",
+			MustDelete:           true,
+		},
+	}
+
+	tmpFile, err := os.CreateTemp("", "resources-*.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpFile.Name())
+	configBytes, err := json.Marshal(resources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tmpFile.Name(), configBytes, 0644); err != nil {
+		t.Fatal(err)
+	}
+	c.ResourceConfigPath = tmpFile.Name()
+
+	mockClient := mock.NewDynamicClient(nil)
+	// GetFunc would only be called if runSelfCleanup ran setOwnerReferences.
+	getCalled := false
+	mockClient.GetFunc = func(_ context.Context, _ string, _ metav1.GetOptions, _ ...string) (*unstructured.Unstructured, error) {
+		getCalled = true
+		return nil, nil
+	}
+
+	if err := c.CleanupResources(ctx, mockClient, mock.NewRESTMapper()); err != nil {
+		t.Fatalf("CleanupResources returned unexpected error: %v", err)
+	}
+	if getCalled {
+		t.Error("expected runSelfCleanup to be a no-op, but GetFunc was invoked")
+	}
+}
+
 func TestFinalizeCleanup(t *testing.T) {
 	server := &cleanupServiceServer{}
 	ctx := context.TODO()

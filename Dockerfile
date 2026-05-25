@@ -3,7 +3,7 @@ ARG FIPS_MODULE
 
 FROM --platform=$BUILDPLATFORM tonistiigi/xx AS xx
 
-FROM --platform=$BUILDPLATFORM us-docker.pkg.dev/palette-images/build-base-images/golang:${BUILDER_GOLANG_VERSION:-1.25}-alpine AS builder
+FROM --platform=$BUILDPLATFORM us-docker.pkg.dev/palette-images/build-base-images/golang:${BUILDER_GOLANG_VERSION:-1.26}-alpine AS builder
 ARG TARGETOS
 ARG TARGETARCH
 ARG FIPS_MODULE
@@ -28,6 +28,7 @@ RUN export GOOS=${TARGETOS} && \
     export TARGETPLATFORM=${TARGETOS}/${TARGETARCH} && \
     export CC=$(xx-clang --print-target-triple)-clang && \
     export CXX=$(xx-clang --print-target-triple)-clang++ && \
+    export GOTOOLCHAIN=go1.26.3+auto && \
     if [ "${FIPS_MODULE}" = "boringcrypto" ]; then \
         go-build-fips.sh -a -o cleanup; \
         go tool nm cleanup | grep FIPS; \
